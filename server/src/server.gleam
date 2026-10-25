@@ -2,6 +2,7 @@ import config
 import context
 import gleam/erlang/process
 import gleam/io
+import migrations
 import mist
 import simplifile
 import sqlight
@@ -39,6 +40,14 @@ pub fn main() -> Nil {
     Ok(conn) -> conn
     Error(err) -> {
       io.print_error("Cant open SQLite db: " <> db_path)
+      panic as sqlight_error_message(err)
+    }
+  }
+
+  case migrations.migrate(conn) {
+    Ok(Nil) -> Nil
+    Error(err) -> {
+      io.print_error("DB migration failed")
       panic as sqlight_error_message(err)
     }
   }

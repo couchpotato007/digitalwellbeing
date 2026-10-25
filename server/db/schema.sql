@@ -1,6 +1,6 @@
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE devices (
+CREATE TABLE IF NOT EXISTS devices (
     id          INTEGER PRIMARY KEY,
     user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name        TEXT NOT NULL,
@@ -8,19 +8,19 @@ CREATE TABLE devices (
     last_sync   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE TABLE categories (
+CREATE TABLE IF NOT EXISTS categories (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE
 );
 
-CREATE TABLE apps (
+CREATE TABLE IF NOT EXISTS apps (
     id          INTEGER PRIMARY KEY,
     app_id      TEXT NOT NULL UNIQUE,
     title       TEXT NOT NULL,
     category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL
 );
 
-CREATE TABLE app_usage (
+CREATE TABLE IF NOT EXISTS app_usage (
     id        INTEGER PRIMARY KEY,
     device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     app_id    INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
@@ -30,25 +30,25 @@ CREATE TABLE app_usage (
     UNIQUE (device_id, app_id, started_at)
 );
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE INDEX idx_usage_device_start ON app_usage(device_id, started_at);
-CREATE INDEX idx_usage_app_start    ON app_usage(app_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_usage_device_start ON app_usage(device_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_usage_app_start    ON app_usage(app_id, started_at);
 
-CREATE TABLE screen_events (
+CREATE TABLE IF NOT EXISTS screen_events (
     id          INTEGER PRIMARY KEY,
     device_id   INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     ts          INTEGER NOT NULL,
     type        TEXT NOT NULL CHECK (type IN ('screen_on','screen_off','unlock'))
 );
-CREATE INDEX idx_screen_device_ts ON screen_events(device_id, ts);
+CREATE INDEX IF NOT EXISTS idx_screen_device_ts ON screen_events(device_id, ts);
 
-CREATE TABLE limits (
+CREATE TABLE IF NOT EXISTS limits (
     id            INTEGER PRIMARY KEY,
     user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     app_id        INTEGER REFERENCES apps(id) ON DELETE CASCADE,
@@ -57,7 +57,7 @@ CREATE TABLE limits (
     CHECK ((app_id IS NULL) <> (category_id IS NULL))
 );
 
-CREATE TABLE daily_summary (
+CREATE TABLE IF NOT EXISTS daily_summary (
     device_id     INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     app_id        INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
     day           TEXT NOT NULL,
