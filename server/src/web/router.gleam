@@ -1,6 +1,8 @@
 import context
 import gleam/http/request
 import gleam/http/response
+import gleam/option.{Some}
+import web/handlers/user
 import wisp
 
 fn middleware(req, handler) {
@@ -20,6 +22,8 @@ pub fn handle_request(
   case wisp.path_segments(req) {
     [] -> wisp.ok() |> wisp.string_body("das kappt")
     ["track"] -> wisp.ok() |> wisp.string_body("Cool")
+    ["user", id] -> user.user_handler(ctx, req, Some(id))
+    ["user"] -> user.user_handler(ctx, req, option.None)
     _ -> wisp.not_found()
   }
 }

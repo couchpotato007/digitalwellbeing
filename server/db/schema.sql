@@ -5,7 +5,7 @@ CREATE TABLE devices (
     user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name        TEXT NOT NULL,
     platform    TEXT NOT NULL,
-    last_sync   INTEGER
+    last_sync   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 CREATE TABLE categories (
@@ -24,10 +24,10 @@ CREATE TABLE app_usage (
     id        INTEGER PRIMARY KEY,
     device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     app_id    INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
-    start     TEXT NOT NULL,
-    "end"     TEXT,
-    CHECK ("end" IS NULL OR "end" >= start),
-    UNIQUE (device_id, app_id, start)
+    started_at     TEXT NOT NULL,
+    ended_at       TEXT NOT NULL,
+    CHECK (ended_at >= started_at),
+    UNIQUE (device_id, app_id, started_at)
 );
 
 CREATE TABLE users (
@@ -37,8 +37,8 @@ CREATE TABLE users (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE INDEX idx_usage_device_start ON app_usage(device_id, start_ts);
-CREATE INDEX idx_usage_app_start    ON app_usage(app_id, start_ts);
+CREATE INDEX idx_usage_device_start ON app_usage(device_id, started_at);
+CREATE INDEX idx_usage_app_start    ON app_usage(app_id, started_at);
 
 CREATE TABLE screen_events (
     id          INTEGER PRIMARY KEY,
