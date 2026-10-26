@@ -184,10 +184,31 @@
         "type": "github"
       }
     },
+    "odin-overlay": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1793057904,
+        "narHash": "sha256-Eaxs3HJ4Vpb8zPODeF6VWntSS3/5tj8ZR5QDFfXhgTw=",
+        "owner": "couchpotato007",
+        "repo": "odin-overlay",
+        "rev": "560e5e76887241b965837f3ee372ed30bf03b94b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "couchpotato007",
+        "repo": "odin-overlay",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "jailed-agents": "jailed-agents",
-        "nixpkgs": "nixpkgs_3"
+        "nixpkgs": "nixpkgs_3",
+        "odin-overlay": "odin-overlay"
       }
     },
     "systems": {

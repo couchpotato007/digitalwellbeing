@@ -1,0 +1,3 @@
+[submodule "desktop/external/kiln"]
+	path = desktop/external/kiln
+	url = git@github.com:couchpotato007/kiln.git

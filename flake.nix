@@ -4,6 +4,10 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
     jailed-agents.url = "github:andersonjoseph/jailed-agents";
+    odin-overlay = {
+      url = "github:couchpotato007/odin-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -11,6 +15,7 @@
       self,
       nixpkgs,
       jailed-agents,
+      odin-overlay,
     }:
     let
       forAllSystems = nixpkgs.lib.genAttrs [
@@ -23,6 +28,7 @@
       system = "x86_64-linux";
       pkgs = import nixpkgs {
         inherit system;
+        overlays = [ odin-overlay.overlays.default ];
         config = {
           allowUnfree = true;
           android_sdk.accept_license = true;
@@ -45,6 +51,13 @@
           watchexec --workdir ./server --ignore build -e gleam \
             --stop-signal SIGKILL --stop-timeout 2 -r \
             "fuser -k ''${PORT}/tcp 2>/dev/null; gleam run"
+        '';
+
+        # runs the desktop app (desktop/), arguments go to `odin run`
+        "desktop" = ''
+          set -euo pipefail
+          cd desktop
+          odin run src -collection:lib=external/kiln -out:build/wellbeing "$@"
         '';
 
         # regenerates server/src/server/sql.gleam after changing the schema or a query
@@ -95,6 +108,20 @@
           cargo
           rustc
 
+          glibc
+          cmake
+
+          pkg-config
+          clang
+          clang-tools
+          raylib
+          curl
+          zlib
+          libxinerama
+          libxcursor
+          xinput
+          libxi
+
           (jailed-agents.lib.${system}.makeJailedOpencode {
             extraPkgs = with pkgs; [
               gleam
@@ -115,9 +142,18 @@
               gradle
               androidSdk
               android-tools
+              odin-bin.stable
+              ols-bin.stable
+              clang
+              raylib
+              curl
+              zlib
             ];
             extraReadwriteDirs = [ "~/.claude" ];
           })
+
+          odin-bin.stable
+          ols-bin.stable
 
           jdk17
           gradle

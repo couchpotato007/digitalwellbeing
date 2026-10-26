@@ -189,3 +189,30 @@ saving. The app has three tabs:
 
 Without a server, Overview shows this phone's last 7 days. Android keeps usage
 events only for about a week, so the first sync uploads less than 30 days.
+
+## Desktop
+
+`desktop/` is a desktop app in [Odin](https://odin-lang.org) with
+[kiln](https://github.com/couchpotato007/kiln) (a submodule in
+`desktop/external/kiln`, `git submodule update --init` after cloning). It
+shows the same overview as the Android app (range, date and device, summary,
+time per hour or day, the activity view, categories, apps, window titles,
+domains and devices) and has the server settings with **Test connection**.
+Click a day bar or a day row to open that day, a block of the activity view
+to see its apps and window titles. It reloads every 5 minutes while the
+overview is shown.
+
+```sh
+desktop          # in the dev shell: builds and runs desktop/build/wellbeing
+```
+
+The settings (server URL, token, colors) are saved in
+`~/.config/digitalwellbeing/desktop.json`, readable only by you. kiln builds
+its fonts into the binary, so it runs from any directory. To check a layout
+without a window, render it at phone, tablet and desktop size from a saved
+`/api/stats` answer:
+
+```sh
+cd desktop
+odin run src -collection:lib=external/kiln -define:KILN_SNAPSHOT=true -define:FIXTURE=stats.json
+```
