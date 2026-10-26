@@ -18,6 +18,21 @@ device: ActivityWatch ──(localhost:5600)── agent ──HTTPS──▶ se
 
 ## Server
 
+GitHub Actions builds the server as a Docker image (amd64 and arm64) and
+publishes it as `ghcr.io/couchpotato007/digitalwellbeing`: `:latest` from
+`main`, `:1.2.3` and `:1.2` from a `v1.2.3` tag. With [`compose.yaml`](compose.yaml):
+
+```sh
+printf 'SECRET_BASE_KEY=%s\nADMIN_TOKEN=%s\n' "$(openssl rand -base64 48)" "$(openssl rand -hex 24)" > .env
+docker compose up -d
+```
+
+The database lives in the `/data` volume. The image runs as UID 1000, so a
+bind mount instead of the named volume has to be writable for that user. Put
+it behind your reverse proxy for HTTPS, because the token goes over the wire.
+
+Without Docker:
+
 ```sh
 cd server
 CONFIG_DIR=./data SECRET_BASE_KEY=$(openssl rand -base64 48) ADMIN_TOKEN=change-me gleam run
@@ -91,9 +106,35 @@ Manager: `SERVER_URL=… TOKEN=… DEVICE=… nix run github:<you>/digitalwellbe
   and AFK watchers. Time away from the computer is cut out. On Wayland, the
   window watcher needs a compositor-specific watcher (e.g. `awatcher`).
   On Linux, run the agent as a systemd user service.
-- **Android**: Install ActivityWatch from F-Droid or Play and grant it usage
-  access. Run the agent in Termux (`pkg install erlang`), and use Termux:Boot to
-  start it on boot.
+- **Android**: See below.
 - **iOS**: Not supported. iOS Screen Time has no API that lets apps export usage data.
 
 On the first sync the agent uploads the last 30 days.
+
+### Android
+
+Android doesn't need Erlang. [`android/sync.sh`](android/sync.sh) does the
+same sync with `curl` and `jq` (app usage only, phones have no browser tab
+watcher). Android's job scheduler runs it every 15 minutes, which survives
+reboots and battery optimisation better than a process running in the
+background.
+
+1. Install ActivityWatch and grant it usage access. Install Termux and
+   Termux:API, both from F-Droid (or both from GitHub, but don't mix sources).
+2. In Termux:
+
+   ```sh
+   pkg install curl jq termux-api
+   mkdir -p ~/.config
+   curl -fLo ~/sync.sh https://raw.githubusercontent.com/couchpotato007/digitalwellbeing/main/android/sync.sh
+   chmod +x ~/sync.sh
+   cat > ~/.config/digitalwellbeing.env <<'EOF'
+   SERVER_URL=https://wellbeing.example.org
+   TOKEN=change-me
+   DEVICE=phone
+   EOF
+   ~/sync.sh   # once by hand, to check it works
+   termux-job-scheduler --script ~/sync.sh --period-ms 900000 --persisted true --network any
+   ```
+
+`termux-job-scheduler -p` lists the job and `--cancel-all` removes it.

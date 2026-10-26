@@ -1,0 +1,18 @@
+# Put SECRET_BASE_KEY and ADMIN_TOKEN in a .env file next to this one:
+#   SECRET_BASE_KEY=$(openssl rand -base64 48)
+#   ADMIN_TOKEN=$(openssl rand -base64 24)
+services:
+  digitalwellbeing:
+    image: ghcr.io/couchpotato007/digitalwellbeing:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      SECRET_BASE_KEY: ${SECRET_BASE_KEY:?}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?}
+      TZ: Europe/Berlin
+    volumes:
+      - data:/data
+
+volumes:
+  data:
