@@ -1,5 +1,5 @@
 {
-  description = "Eine einfache Nix dev shell für nodejs";
+  description = "Unified screen time dashboard for ActivityWatch on all your devices";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
@@ -13,6 +13,13 @@
       jailed-agents,
     }:
     let
+      forAllSystems = nixpkgs.lib.genAttrs [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
+
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
 
@@ -90,6 +97,13 @@
         ++ scriptPackages;
     in
     {
+      packages = forAllSystems (system: rec {
+        agent = nixpkgs.legacyPackages.${system}.callPackage ./nix/agent.nix { };
+        default = agent;
+      });
+
+      homeManagerModules.default = import ./nix/hm-module.nix self;
+
       devShells.${system}.default = pkgs.mkShell {
         packages = buildInputs;
 

@@ -1,9 +1,15 @@
 import envoy
+import gleam/bool
 import gleam/int
 import gleam/result
 
 pub type Config {
-  Config(config_dir: String, secret_base_key: String, port: Int)
+  Config(
+    config_dir: String,
+    secret_base_key: String,
+    port: Int,
+    admin_token: String,
+  )
 }
 
 fn required(name) {
@@ -13,7 +19,9 @@ fn required(name) {
 pub fn load() -> Result(Config, String) {
   use config_dir <- result.try(required("CONFIG_DIR"))
   use secret_base_key <- result.try(required("SECRET_BASE_KEY"))
+  use admin_token <- result.try(required("ADMIN_TOKEN"))
+  use <- bool.guard(admin_token == "", Error("ADMIN_TOKEN must not be empty"))
   let port = envoy.get("PORT") |> result.try(int.parse) |> result.unwrap(8080)
 
-  Ok(Config(config_dir:, secret_base_key:, port:))
+  Ok(Config(config_dir:, secret_base_key:, port:, admin_token:))
 }
