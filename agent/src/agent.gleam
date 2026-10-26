@@ -29,6 +29,7 @@ type Config {
     token: String,
     device: String,
     activitywatch: String,
+    os: String,
     interval_seconds: Int,
   )
 }
@@ -83,7 +84,14 @@ fn load_config() -> Result(Config, String) {
     envoy.get("INTERVAL_SECONDS")
     |> result.try(int.parse)
     |> result.unwrap(300)
-  Ok(Config(server:, token:, device:, activitywatch:, interval_seconds:))
+  Ok(Config(
+    server:,
+    token:,
+    device:,
+    activitywatch:,
+    os: os_name(),
+    interval_seconds:,
+  ))
 }
 
 fn sync(cfg: Config) -> Result(Int, String) {
@@ -108,10 +116,16 @@ fn sync(cfg: Config) -> Result(Int, String) {
     now,
   ))
   let body =
-    shared.upload_to_json(shared.Upload(from_ms:, events:)) |> json.to_string
+    shared.upload_to_json(shared.Upload(from_ms:, os: cfg.os, events:))
+    |> json.to_string
   use _ <- result.map(send(http.Post, device_url <> "/events", cfg.token, body))
   list.length(events)
 }
+
+/// The operating system, like "NixOS 25.05 (Warbler)", "macOS 15.1" or
+/// "Windows 11".
+@external(erlang, "agent_ffi", "os_name")
+fn os_name() -> String
 
 /// Matches the app names of browsers, so tabs only count while the browser
 /// window is active.

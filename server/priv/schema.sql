@@ -14,6 +14,12 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_start ON events(start_ms);
 CREATE INDEX IF NOT EXISTS events_app ON events(device, app, title);
 
+-- What a device told about itself on its last upload.
+CREATE TABLE IF NOT EXISTS devices (
+    name        TEXT    PRIMARY KEY,
+    os          TEXT    NOT NULL
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS categories (
     id          INTEGER PRIMARY KEY,
     name        TEXT    NOT NULL,

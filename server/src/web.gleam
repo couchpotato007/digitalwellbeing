@@ -37,6 +37,7 @@ pub fn handle_request(req: wisp.Request, ctx: Context) -> wisp.Response {
     http.Post, ["devices", device, "delete"] ->
       delete_device(req, ctx, decode_segment(device))
     http.Get, ["api", "stats"] -> stats_json(req, ctx)
+    http.Get, ["api", "block"] -> block_json(req, ctx)
     http.Get, ["api", "devices", device, "cursor"] ->
       cursor(ctx, decode_segment(device))
     http.Post, ["api", "devices", device, "events"] ->
@@ -142,6 +143,36 @@ fn stats_json(req: wisp.Request, ctx: Context) -> wisp.Response {
     Ok(report) ->
       stats.to_json(report) |> json.to_string |> wisp.json_response(200)
     Error(err) -> db_error(err)
+  }
+}
+
+/// What a block of the activity view was made of, for the query
+/// `?device=laptop&category=Work&since_ms=…&until_ms=…`. Without `device` it
+/// is all devices.
+fn block_json(req: wisp.Request, ctx: Context) -> wisp.Response {
+  let query = wisp.get_query(req)
+  let field = fn(name) { list.key_find(query, name) |> result.unwrap("") }
+  let block = {
+    use since_ms <- result.try(int.parse(field("since_ms")))
+    use until_ms <- result.map(int.parse(field("until_ms")))
+    db.Block(field("device"), field("category"), since_ms, until_ms)
+  }
+  case block {
+    Error(Nil) -> wisp.bad_request("since_ms and until_ms are needed")
+    Ok(block) -> {
+      let lists = {
+        use apps <- result.try(db.block_apps(ctx.db, block))
+        use titles <- result.map(db.block_titles(ctx.db, block))
+        json.object([
+          #("apps", json.array(apps, stats.usage_to_json)),
+          #("titles", json.array(titles, stats.usage_to_json)),
+        ])
+      }
+      case lists {
+        Ok(body) -> json.to_string(body) |> wisp.json_response(200)
+        Error(err) -> db_error(err)
+      }
+    }
   }
 }
 

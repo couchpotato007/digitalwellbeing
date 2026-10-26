@@ -29,6 +29,8 @@ data class Report(
     /** Top-level categories, the index picks the color, see [categoryColor]. */
     val categoryOrder: List<String>,
     val deviceNames: List<String>,
+    /** Operating system per device name, like "NixOS 25.05 (Warbler)", missing if unknown. */
+    val deviceOs: Map<String, String>,
     /** Detail is when the device was last active. */
     val devices: List<UsageItem>,
     val categories: List<UsageItem>,
@@ -38,6 +40,9 @@ data class Report(
 )
 
 data class UsageItem(val name: String, val detail: String, val ms: Long)
+
+/** What a block of the activity view was made of, from `GET /api/block`. */
+data class BlockUsage(val apps: List<UsageItem>, val titles: List<UsageItem>)
 
 /** A row of the activity view. [date] is set for rows of a day, empty for rows of a device. */
 data class Strip(val label: String, val date: String, val startMs: Long, val endMs: Long, val segments: List<Segment>)
@@ -50,6 +55,15 @@ object Stats {
         val query = "date=" + encode(date) + "&days=$days&device=" + encode(device)
         val body = Sync.request("GET", server.url.trimEnd('/') + "/api/stats?$query", server.token, null)
         return parse(JSONObject(body))
+    }
+
+    /** [device] "" is all devices. */
+    fun block(server: Server, device: String, category: String, sinceMs: Long, untilMs: Long): BlockUsage {
+        val query = "device=" + encode(device) + "&category=" + encode(category) +
+            "&since_ms=$sinceMs&until_ms=$untilMs"
+        val body = Sync.request("GET", server.url.trimEnd('/') + "/api/block?$query", server.token, null)
+        val o = JSONObject(body)
+        return BlockUsage(usages(o.getJSONArray("apps")), usages(o.getJSONArray("titles")))
     }
 
     private fun encode(value: String) = URLEncoder.encode(value, "UTF-8").replace("+", "%20")
@@ -83,6 +97,10 @@ object Stats {
         },
         categoryOrder = o.getJSONArray("category_order").strings(),
         deviceNames = o.getJSONArray("device_names").strings(),
+        // servers before the OS was stored don't send it
+        deviceOs = o.optJSONObject("device_os")?.let { os ->
+            os.keys().asSequence().associateWith { os.getString(it) }
+        }.orEmpty(),
         devices = usages(o.getJSONArray("devices")),
         categories = usages(o.getJSONArray("categories")),
         apps = usages(o.getJSONArray("apps")),
@@ -97,6 +115,9 @@ object Stats {
 
     private fun JSONArray.strings() = (0 until length()).map { getString(it) }
 }
+
+/** "NixOS 25.05 (Warbler)" -> "NixOS" */
+fun osName(os: String) = os.substringBefore(' ')
 
 /** "Work > Programming" -> "Work" */
 fun topLevel(category: String) = category.substringBefore(" > ")

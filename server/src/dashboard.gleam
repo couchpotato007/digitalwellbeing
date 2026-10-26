@@ -1,5 +1,6 @@
 import categories.{type Rule, Rule}
 import db.{type Usage}
+import gleam/dict
 import gleam/float
 import gleam/int
 import gleam/list
@@ -105,9 +106,13 @@ fn on_class(on: Bool) -> String {
 pub fn page(report: Report) -> String {
   let filter = report.filter
   let order = report.category_order
-  let device_name = case filter.device {
-    "" -> "all devices"
-    device -> device
+  let device_name = case
+    filter.device,
+    dict.get(report.device_os, filter.device)
+  {
+    "", _ -> "all devices"
+    device, Ok(os) -> device <> " (" <> os <> ")"
+    device, Error(Nil) -> device
   }
   let period = case filter.days, report.days {
     1, [day] -> stats.weekday(day.weekday) <> " " <> filter.date
@@ -164,9 +169,13 @@ pub fn page(report: Report) -> String {
         filter.device == "",
       ),
       ..list.map(report.device_names, fn(device) {
+        let label = case dict.get(report.device_os, device) {
+          Ok(os) -> device <> " · " <> os_short(os)
+          Error(Nil) -> device
+        }
         pill(
           url(filter.date, filter.days, device),
-          device,
+          label,
           device == filter.device,
         )
       })
@@ -260,6 +269,14 @@ pub fn page(report: Report) -> String {
       device -> delete_device_form(device)
     },
   ])
+}
+
+/// "NixOS 25.05 (Warbler)" -> "NixOS", "Android 15" -> "Android"
+fn os_short(os: String) -> String {
+  case string.split_once(os, " ") {
+    Ok(#(name, _)) -> name
+    Error(Nil) -> os
+  }
 }
 
 fn or_dash(value: String) -> String {

@@ -31,3 +31,17 @@ ORDER BY device;
 -- name: DeleteDevice :exec
 DELETE FROM events
 WHERE device = sqlc.arg(device);
+
+-- name: DeleteDeviceInfo :exec
+DELETE FROM devices
+WHERE name = sqlc.arg(device);
+
+-- name: SetDeviceOs :exec
+INSERT INTO devices (name, os)
+VALUES (sqlc.arg(device), sqlc.arg(os))
+ON CONFLICT (name) DO UPDATE SET os = excluded.os;
+
+-- name: DeviceSystems :many
+SELECT name, os
+FROM devices
+ORDER BY name;

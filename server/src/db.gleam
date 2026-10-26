@@ -2,6 +2,7 @@
 //// (see README.md). This module runs them with sqlight.
 
 import categories.{type Rule, Rule}
+import gleam/dict
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -106,7 +107,8 @@ pub fn cursor(conn: Connection, device: String) -> Result(Int, sqlight.Error) {
 
 /// Replaces everything `device` did from `upload.from_ms` on. Events that
 /// started before are cut off there, ActivityWatch sends their rest again.
-/// `category` gets the device, app and title of an event.
+/// `category` gets the device, app and title of an event. The device's OS is
+/// kept unless the upload has none.
 pub fn replace_events(
   conn: Connection,
   device: String,
@@ -122,6 +124,10 @@ pub fn replace_events(
     conn,
     sql.cut_events_at(device:, from_ms: upload.from_ms),
   ))
+  use _ <- result.try(case upload.os {
+    "" -> Ok(Nil)
+    os -> exec(conn, sql.set_device_os(device:, os:))
+  })
   list.try_each(upload.events, fn(e) {
     exec(
       conn,
@@ -212,13 +218,23 @@ pub fn delete_device(
   conn: Connection,
   device: String,
 ) -> Result(Nil, sqlight.Error) {
-  exec(conn, sql.delete_device(device:))
+  use <- transaction(conn)
+  use _ <- result.try(exec(conn, sql.delete_device(device:)))
+  exec(conn, sql.delete_device_info(device:))
 }
 
 /// All devices that ever sent something.
 pub fn device_names(conn: Connection) -> Result(List(String), sqlight.Error) {
   query(conn, sql.device_names())
   |> result.map(list.map(_, fn(row) { row.device }))
+}
+
+/// The operating system of each device that sent one.
+pub fn device_systems(
+  conn: Connection,
+) -> Result(dict.Dict(String, String), sqlight.Error) {
+  use rows <- result.map(query(conn, sql.device_systems()))
+  list.map(rows, fn(row) { #(row.name, row.os) }) |> dict.from_list
 }
 
 /// What the dashboard shows: the `days` days up to and including `date`
@@ -406,6 +422,48 @@ pub fn titles(
       since_ms: filter.since_ms,
       until_ms: filter.until_ms,
       device: filter.device,
+    ),
+  ))
+  use row <- list.map(rows)
+  Usage(row.name, row.detail, row.ms)
+}
+
+/// A block of the activity view: the screen time of `category` from
+/// `since_ms` to `until_ms` on `device`, or on all devices if it is "".
+pub type Block {
+  Block(device: String, category: String, since_ms: Int, until_ms: Int)
+}
+
+/// The apps of a block, with the time cut to it.
+pub fn block_apps(
+  conn: Connection,
+  block: Block,
+) -> Result(List(Usage), sqlight.Error) {
+  use rows <- result.map(query(
+    conn,
+    sql.block_apps(
+      until_ms: block.until_ms,
+      since_ms: block.since_ms,
+      category: block.category,
+      device: block.device,
+    ),
+  ))
+  use row <- list.map(rows)
+  Usage(row.name, device_list(row.detail), row.ms)
+}
+
+/// The window titles of a block, the detail is the app.
+pub fn block_titles(
+  conn: Connection,
+  block: Block,
+) -> Result(List(Usage), sqlight.Error) {
+  use rows <- result.map(query(
+    conn,
+    sql.block_titles(
+      until_ms: block.until_ms,
+      since_ms: block.since_ms,
+      category: block.category,
+      device: block.device,
     ),
   ))
   use row <- list.map(rows)

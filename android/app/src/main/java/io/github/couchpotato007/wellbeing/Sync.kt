@@ -1,6 +1,7 @@
 package io.github.couchpotato007.wellbeing
 
 import android.content.Context
+import android.os.Build
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
@@ -62,6 +63,7 @@ object Sync {
             val events = Usage.events(context, from, now)
             val body = JSONObject()
                 .put("from_ms", from)
+                .put("os", "Android ${Build.VERSION.RELEASE}")
                 .put("events", JSONArray(events.map { it.toJson() }))
             request("POST", "$base/events", server.token, body.toString())
             events.size

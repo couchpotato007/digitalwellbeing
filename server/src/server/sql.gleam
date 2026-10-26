@@ -362,6 +362,81 @@ pub fn uncategorized_titles_decoder() -> decode.Decoder(UncategorizedTitles) {
   decode.success(UncategorizedTitles(name:, detail:, ms:))
 }
 
+pub type BlockApps {
+  BlockApps(name: String, detail: String, ms: Int)
+}
+
+pub fn block_apps(
+  until_ms until_ms: Int,
+  since_ms since_ms: Int,
+  category category: String,
+  device device: String,
+) {
+  let sql =
+    "SELECT app AS name,
+  CAST(group_concat(DISTINCT device) AS TEXT) AS detail,
+  CAST(sum(min(start_ms + duration_ms, CAST(?1 AS INTEGER)) - max(start_ms, CAST(?2 AS INTEGER))) AS INTEGER) AS ms
+FROM events
+WHERE kind = 'window' AND category = ?3
+  AND start_ms < ?1 AND start_ms + duration_ms > ?2
+  AND (CAST(?4 AS TEXT) = '' OR device = ?4)
+GROUP BY app ORDER BY ms DESC LIMIT 15"
+  #(
+    sql,
+    [
+      dev.ParamInt(until_ms),
+      dev.ParamInt(since_ms),
+      dev.ParamString(category),
+      dev.ParamString(device),
+    ],
+    block_apps_decoder(),
+  )
+}
+
+pub fn block_apps_decoder() -> decode.Decoder(BlockApps) {
+  use name <- decode.field(0, decode.string)
+  use detail <- decode.field(1, decode.string)
+  use ms <- decode.field(2, decode.int)
+  decode.success(BlockApps(name:, detail:, ms:))
+}
+
+pub type BlockTitles {
+  BlockTitles(name: String, detail: String, ms: Int)
+}
+
+pub fn block_titles(
+  until_ms until_ms: Int,
+  since_ms since_ms: Int,
+  category category: String,
+  device device: String,
+) {
+  let sql =
+    "SELECT title AS name, app AS detail,
+  CAST(sum(min(start_ms + duration_ms, CAST(?1 AS INTEGER)) - max(start_ms, CAST(?2 AS INTEGER))) AS INTEGER) AS ms
+FROM events
+WHERE kind = 'window' AND category = ?3
+  AND start_ms < ?1 AND start_ms + duration_ms > ?2
+  AND (CAST(?4 AS TEXT) = '' OR device = ?4)
+GROUP BY title ORDER BY ms DESC LIMIT 15"
+  #(
+    sql,
+    [
+      dev.ParamInt(until_ms),
+      dev.ParamInt(since_ms),
+      dev.ParamString(category),
+      dev.ParamString(device),
+    ],
+    block_titles_decoder(),
+  )
+}
+
+pub fn block_titles_decoder() -> decode.Decoder(BlockTitles) {
+  use name <- decode.field(0, decode.string)
+  use detail <- decode.field(1, decode.string)
+  use ms <- decode.field(2, decode.int)
+  decode.success(BlockTitles(name:, detail:, ms:))
+}
+
 pub type Cursor {
   Cursor(cursor_ms: Int)
 }
@@ -474,4 +549,37 @@ pub fn delete_device(device device: String) {
     "DELETE FROM events
 WHERE device = ?1"
   #(sql, [dev.ParamString(device)])
+}
+
+pub fn delete_device_info(device device: String) {
+  let sql =
+    "DELETE FROM devices
+WHERE name = ?1"
+  #(sql, [dev.ParamString(device)])
+}
+
+pub fn set_device_os(device device: String, os os: String) {
+  let sql =
+    "INSERT INTO devices (name, os)
+VALUES (?1, ?2)
+ON CONFLICT (name) DO UPDATE SET os = excluded.os"
+  #(sql, [dev.ParamString(device), dev.ParamString(os)])
+}
+
+pub type DeviceSystems {
+  DeviceSystems(name: String, os: String)
+}
+
+pub fn device_systems() {
+  let sql =
+    "SELECT name, os
+FROM devices
+ORDER BY name"
+  #(sql, [], device_systems_decoder())
+}
+
+pub fn device_systems_decoder() -> decode.Decoder(DeviceSystems) {
+  use name <- decode.field(0, decode.string)
+  use os <- decode.field(1, decode.string)
+  decode.success(DeviceSystems(name:, os:))
 }

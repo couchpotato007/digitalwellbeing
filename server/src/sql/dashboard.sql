@@ -90,3 +90,24 @@ SELECT title AS name, app AS detail, CAST(sum(duration_ms) AS INTEGER) AS ms
 FROM events
 WHERE category = 'Uncategorized' AND kind = 'window' AND start_ms >= sqlc.arg(since_ms)
 GROUP BY title ORDER BY ms DESC LIMIT 15;
+
+-- What made up a block of the activity view: the screen time of a category
+-- from `since_ms` to `until_ms`, cut to that time.
+-- name: BlockApps :many
+SELECT app AS name,
+  CAST(group_concat(DISTINCT device) AS TEXT) AS detail,
+  CAST(sum(min(start_ms + duration_ms, CAST(sqlc.arg(until_ms) AS INTEGER)) - max(start_ms, CAST(sqlc.arg(since_ms) AS INTEGER))) AS INTEGER) AS ms
+FROM events
+WHERE kind = 'window' AND category = sqlc.arg(category)
+  AND start_ms < sqlc.arg(until_ms) AND start_ms + duration_ms > sqlc.arg(since_ms)
+  AND (CAST(sqlc.arg(device) AS TEXT) = '' OR device = sqlc.arg(device))
+GROUP BY app ORDER BY ms DESC LIMIT 15;
+
+-- name: BlockTitles :many
+SELECT title AS name, app AS detail,
+  CAST(sum(min(start_ms + duration_ms, CAST(sqlc.arg(until_ms) AS INTEGER)) - max(start_ms, CAST(sqlc.arg(since_ms) AS INTEGER))) AS INTEGER) AS ms
+FROM events
+WHERE kind = 'window' AND category = sqlc.arg(category)
+  AND start_ms < sqlc.arg(until_ms) AND start_ms + duration_ms > sqlc.arg(since_ms)
+  AND (CAST(sqlc.arg(device) AS TEXT) = '' OR device = sqlc.arg(device))
+GROUP BY title ORDER BY ms DESC LIMIT 15;

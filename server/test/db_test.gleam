@@ -1,7 +1,9 @@
 import categories.{Rule}
 import db
+import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import shared.{Event}
 import sqlight
 import stats
@@ -18,7 +20,7 @@ fn upload(conn, device, events) {
     db.replace_events(
       conn,
       device,
-      shared.Upload(from_ms: 0, events:),
+      shared.Upload(from_ms: 0, os: "", events:),
       categories.categorizer(rules),
     )
   Nil
@@ -148,6 +150,58 @@ pub fn dashboard_queries_test() {
   let assert Ok([_]) = db.uncategorized_apps(conn, today)
   let assert Ok([]) = db.uncategorized_titles(conn, today)
   let assert Ok(["desktop", "laptop"]) = db.device_names(conn)
+}
+
+pub fn device_os_test() {
+  use conn <- with_db
+  let assert Ok(rules) = db.rules(conn)
+  let category = categories.categorizer(rules)
+  let event = Event(shared.Window, now_ms(), 60_000, "Code", "a")
+  let send = fn(os) {
+    let assert Ok(Nil) =
+      db.replace_events(
+        conn,
+        "laptop",
+        shared.Upload(from_ms: 0, os:, events: [event]),
+        category,
+      )
+    Nil
+  }
+  send("NixOS 25.05 (Warbler)")
+  // an agent without OS keeps the known one
+  send("")
+  let assert Ok(systems) = db.device_systems(conn)
+  assert dict.to_list(systems) == [#("laptop", "NixOS 25.05 (Warbler)")]
+
+  let assert Ok(today) = db.filter(conn, "", 1, "")
+  let assert Ok(report) = stats.load(conn, today)
+  let assert [laptop] = report.devices
+  assert string.starts_with(laptop.detail, "NixOS 25.05 (Warbler) · ")
+
+  let assert Ok(Nil) = db.delete_device(conn, "laptop")
+  let assert Ok(systems) = db.device_systems(conn)
+  assert dict.is_empty(systems)
+}
+
+pub fn block_test() {
+  use conn <- with_db
+  let start = now_ms()
+  upload(conn, "laptop", [
+    Event(shared.Window, start, 600_000, "Code", "db.gleam"),
+    Event(shared.Window, start + 600_000, 300_000, "Code", "web.gleam"),
+    Event(shared.Window, start + 900_000, 300_000, "Unknown thing", "x"),
+  ])
+  let assert Ok(category) = category_of(conn, "Code") |> list.first
+  // the block starts in the middle of the first event
+  let block =
+    db.Block("laptop", category.name, start + 300_000, start + 1_200_000)
+  let assert Ok([code]) = db.block_apps(conn, block)
+  assert code.name == "Code"
+  assert code.ms == 600_000
+  assert code.detail == "laptop"
+  let assert Ok([first, second]) = db.block_titles(conn, block)
+  assert first.ms == 300_000 && second.ms == 300_000
+  let assert Ok([]) = db.block_apps(conn, db.Block(..block, device: "phone"))
 }
 
 pub fn invalid_date_is_today_test() {

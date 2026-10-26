@@ -68,7 +68,7 @@ private val darkColors = listOf(
 ).map { Color(it) }
 
 @Composable
-private fun categoryColor(order: List<String>, category: String): Color {
+fun categoryColor(order: List<String>, category: String): Color {
     val dark = isSystemInDarkTheme()
     val slot = colorSlot(order, category)
     return when {
@@ -134,7 +134,7 @@ fun Dashboard(server: Server, refresh: Int) {
         current.today,
         onOpenDay = openDay,
     )
-    if (current.strips.isNotEmpty()) ActivityCard(current, onOpenDay = openDay)
+    if (current.strips.isNotEmpty()) ActivityCard(server, current, onOpenDay = openDay)
     if (current.days > 1) {
         ChartCard(
             "By hour of day · average per day",
@@ -206,7 +206,12 @@ private fun Controls(
     ) {
         FilterChip(selected = device.isEmpty(), onClick = { onDevice("") }, label = { Text("All devices") })
         report.deviceNames.forEach { name ->
-            FilterChip(selected = device == name, onClick = { onDevice(name) }, label = { Text(name) })
+            val os = report.deviceOs[name]
+            FilterChip(
+                selected = device == name,
+                onClick = { onDevice(name) },
+                label = { Text(if (os == null) name else "$name · ${osName(os)}") },
+            )
         }
     }
 }
@@ -265,7 +270,10 @@ private fun SummaryCard(report: Report) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(formatDuration(report.totalMs), style = MaterialTheme.typography.displaySmall)
             Text(
-                report.device.ifEmpty { "All devices" },
+                when (val os = report.deviceOs[report.device]) {
+                    null -> report.device.ifEmpty { "All devices" }
+                    else -> "${report.device} · $os"
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -375,7 +383,7 @@ private fun ChartCard(title: String, buckets: List<UsageItem>, today: String, on
 /** When which category was used, per device for a day or per day for longer. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ActivityCard(report: Report, onOpenDay: (String) -> Unit) {
+private fun ActivityCard(server: Server, report: Report, onOpenDay: (String) -> Unit) {
     val order = report.categoryOrder
     val shown = report.strips.flatMap { s -> s.segments.map { topLevel(it.category) } }.distinct()
     val legend = order.filter { it in shown } + shown.filter { it !in order }
@@ -383,13 +391,34 @@ private fun ActivityCard(report: Report, onOpenDay: (String) -> Unit) {
     // resolved here, Canvas can't call composables
     val colors = (legend + report.strips.flatMap { s -> s.segments.map { it.category } }).distinct()
         .associateWith { categoryColor(order, it) }
+    // the page the full screen timeline opens at, null while closed
+    var opened by rememberSaveable { mutableStateOf<Int?>(null) }
+    opened?.let { page ->
+        TimelineDialog(
+            server,
+            report,
+            subtitle = period(report),
+            initialPage = page,
+            colors = colors,
+            onOpenDay = onOpenDay,
+            onDismiss = { opened = null },
+        )
+    }
 
-    Card {
+    Card(onClick = { opened = 0 }) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(
-                if (report.days == 1) "Activity per device" else "Activity per day",
-                style = MaterialTheme.typography.labelLarge,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (report.days == 1) "Activity per device" else "Activity per day",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "Tap to enlarge ⤢",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 legend.forEach { name ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -398,16 +427,17 @@ private fun ActivityCard(report: Report, onOpenDay: (String) -> Unit) {
                     }
                 }
             }
-            report.strips.forEach { strip ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
+            report.strips.forEachIndexed { i, strip ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clickable { opened = i }.padding(vertical = 2.dp),
+                ) {
                     Text(
                         strip.label,
                         style = MaterialTheme.typography.labelMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .width(72.dp)
-                            .let { if (strip.date.isEmpty()) it else it.clickable { onOpenDay(strip.date) } },
+                        modifier = Modifier.width(72.dp),
                     )
                     Canvas(
                         Modifier

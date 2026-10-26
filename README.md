@@ -60,7 +60,8 @@ and forth or jump to a date. It shows:
 - an activity view of when which category was used, one row per device for a
   day, one row per day for a week or month
 - for weeks and months: the average day per hour
-- top categories, apps, window titles, browser domains and devices
+- top categories, apps, window titles, browser domains and devices (with
+  their operating system, which the agent and the app send along)
 
 Categories are set up on the server under **Categories**. A category is a
 regex matched against the app and window title (for browser tabs: the domain
@@ -79,10 +80,15 @@ API (all calls need `Authorization: Bearer <ADMIN_TOKEN>`):
   dashboard shows for the 7 days up to that date, as JSON (see
   `server/src/stats.gleam`). Without `date` it is today, without `device` all
   devices.
+- `GET  /api/block?device=laptop&category=Work&since_ms=…&until_ms=…` returns
+  the `apps` and window `titles` of that category in that time, cut to it
+  (what a block of the activity view was made of). Without `device` it is all
+  devices.
 - `GET  /api/devices/{device}/cursor` returns `{"cursor_ms": <end of newest event>}`
-- `POST /api/devices/{device}/events` takes `{"from_ms", "events": [{"kind", "start_ms",
+- `POST /api/devices/{device}/events` takes `{"from_ms", "os", "events": [{"kind", "start_ms",
   "duration_ms", "app", "title"}]}` and replaces everything the device did
-  from `from_ms` on. Agents resend the last 10 minutes each time, because
+  from `from_ms` on. `os` (like `"NixOS 25.05 (Warbler)"`) is optional and
+  shown next to the device name. Agents resend the last 10 minutes each time, because
   ActivityWatch still corrects them (e.g. AFK detection).
 
 ## Devices
@@ -158,6 +164,8 @@ gradle wrapper   # once, creates ./gradlew
 
 In the app, grant usage access, then add the server URL, `ADMIN_TOKEN` and a
 device name. With a server, the app shows the server's dashboard for all your
-devices, with the same device, day and range selection. Without one it shows
+devices, with the same device, day and range selection. A tap on the activity
+view opens it full screen: a page per device (or day) to swipe between, the
+day from top to bottom, pinch to zoom, tap a block for the apps and window titles in it. Without one it shows
 this phone's last 7 days. Android keeps usage events only for about a week, so the first sync
 uploads less than 30 days.

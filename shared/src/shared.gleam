@@ -9,13 +9,7 @@ import gleam/json
 /// screen time. `Web` events are the active browser tab, with the domain as
 /// `app`, and overlap the browser's `Window` events.
 pub type Event {
-  Event(
-    kind: Kind,
-    start_ms: Int,
-    duration_ms: Int,
-    app: String,
-    title: String,
-  )
+  Event(kind: Kind, start_ms: Int, duration_ms: Int, app: String, title: String)
 }
 
 pub type Kind {
@@ -56,20 +50,24 @@ pub fn event_decoder() -> decode.Decoder(Event) {
   decode.success(Event(kind:, start_ms:, duration_ms:, app:, title:))
 }
 
-/// Replaces all events of a device from `from_ms` on with `events`.
+/// Replaces all events of a device from `from_ms` on with `events`. `os` is
+/// the device's operating system, like "NixOS 25.05" or "Android 15", ""
+/// from agents that don't send it.
 pub type Upload {
-  Upload(from_ms: Int, events: List(Event))
+  Upload(from_ms: Int, os: String, events: List(Event))
 }
 
 pub fn upload_to_json(upload: Upload) -> json.Json {
   json.object([
     #("from_ms", json.int(upload.from_ms)),
+    #("os", json.string(upload.os)),
     #("events", json.array(upload.events, event_to_json)),
   ])
 }
 
 pub fn upload_decoder() -> decode.Decoder(Upload) {
   use from_ms <- decode.field("from_ms", decode.int)
+  use os <- decode.optional_field("os", "", decode.string)
   use events <- decode.field("events", decode.list(event_decoder()))
-  decode.success(Upload(from_ms:, events:))
+  decode.success(Upload(from_ms:, os:, events:))
 }

@@ -47,7 +47,11 @@ pub type Report {
     category_order: List(String),
     /// All devices that ever sent something, to pick from
     device_names: List(String),
-    /// Usage per device in the period, the detail is when it was last active
+    /// The operating system per device name, missing for devices whose agent
+    /// doesn't send it
+    device_os: dict.Dict(String, String),
+    /// Usage per device in the period, the detail is the OS and when it was
+    /// last active
     devices: List(Usage),
     categories: List(Usage),
     apps: List(Usage),
@@ -81,6 +85,7 @@ pub fn load(
   use stretches <- result.try(db.screen_time(conn, filter))
   use previous <- result.try(db.screen_time(conn, db.previous(filter)))
   use device_names <- result.try(db.device_names(conn))
+  use device_os <- result.try(db.device_systems(conn))
   use devices <- result.try(db.devices(conn, filter))
   use categories <- result.try(db.categories(conn, filter))
   use apps <- result.try(db.apps(conn, filter))
@@ -90,7 +95,13 @@ pub fn load(
   Report(
     ..report,
     device_names:,
-    devices:,
+    device_os:,
+    devices: list.map(devices, fn(device) {
+      case dict.get(device_os, device.name) {
+        Ok(os) -> Usage(..device, detail: os <> " · " <> device.detail)
+        Error(Nil) -> device
+      }
+    }),
     categories:,
     apps:,
     titles:,
@@ -129,6 +140,7 @@ pub fn build(
     strips: strips(filter, days, stretches),
     category_order: category_order(rules),
     device_names: [],
+    device_os: dict.new(),
     devices: [],
     categories: [],
     apps: [],
@@ -321,17 +333,17 @@ pub fn change(now: Int, before: Int) -> Result(Int, Nil) {
   }
 }
 
+pub fn usage_to_json(item: Usage) -> Json {
+  json.object([
+    #("name", json.string(item.name)),
+    #("detail", json.string(item.detail)),
+    #("ms", json.int(item.ms)),
+  ])
+}
+
 pub fn to_json(report: Report) -> Json {
   let filter = report.filter
-  let usages = fn(items: List(Usage)) {
-    json.array(items, fn(item) {
-      json.object([
-        #("name", json.string(item.name)),
-        #("detail", json.string(item.detail)),
-        #("ms", json.int(item.ms)),
-      ])
-    })
-  }
+  let usages = fn(items: List(Usage)) { json.array(items, usage_to_json) }
   json.object([
     #("date", json.string(filter.date)),
     #("first_date", json.string(filter.first_date)),
@@ -371,6 +383,7 @@ pub fn to_json(report: Report) -> Json {
     ),
     #("category_order", json.array(report.category_order, json.string)),
     #("device_names", json.array(report.device_names, json.string)),
+    #("device_os", json.dict(report.device_os, fn(name) { name }, json.string)),
     #("devices", usages(report.devices)),
     #("categories", usages(report.categories)),
     #("apps", usages(report.apps)),
