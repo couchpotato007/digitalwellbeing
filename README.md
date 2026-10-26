@@ -27,8 +27,8 @@ printf 'SECRET_BASE_KEY=%s\nADMIN_TOKEN=%s\n' "$(openssl rand -base64 48)" "$(op
 docker compose up -d
 ```
 
-The database lives in the `/data` volume. The image runs as UID 1000, so a
-bind mount instead of the named volume has to be writable for that user. Put
+The database lives in the `/data` volume. A bind mount works too, the
+container makes it owned by UID 1000, which the server runs as. Put
 it behind your reverse proxy for HTTPS, because the token goes over the wire.
 
 Without Docker:

@@ -17,13 +17,14 @@ RUN gleam export erlang-shipment
 
 FROM ${ERLANG_IMAGE}
 # tzdata so TZ works, days on the dashboard are counted in local time
-RUN apk add --no-cache tzdata \
+RUN apk add --no-cache tzdata su-exec \
  && adduser -D -u 1000 app \
  && mkdir /data && chown app:app /data
 COPY --from=build /src/server/build/erlang-shipment /app
-USER app
+COPY --chmod=755 server/docker-entrypoint.sh /docker-entrypoint.sh
 ENV CONFIG_DIR=/data PORT=8080
 VOLUME /data
 EXPOSE 8080
-ENTRYPOINT ["/app/entrypoint.sh"]
+# starts as root to fix the owner of /data, then runs the server as app (UID 1000)
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["run"]

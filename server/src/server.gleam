@@ -13,6 +13,7 @@ pub fn main() -> Nil {
   let assert Ok(cfg) = config.load()
   let assert Ok(Nil) = simplifile.create_directory_all(cfg.config_dir)
   let assert Ok(conn) = sqlight.open("file:" <> cfg.config_dir <> "/db.sqlite3")
+    as { "Cannot open the database, is " <> cfg.config_dir <> " writable?" }
   let assert Ok(Nil) = db.migrate(conn)
 
   let ctx = web.Context(db: conn, token: cfg.admin_token)
