@@ -34,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -78,63 +79,71 @@ fun categoryColor(order: List<String>, category: String): Color {
     }
 }
 
-/** Screen time of all devices from the server, with a device, day and range to pick. */
-@Composable
-fun Dashboard(server: Server, refresh: Int) {
-    // "" is today
-    var date by rememberSaveable { mutableStateOf("") }
-    var days by rememberSaveable { mutableIntStateOf(1) }
-    // "" is all devices
-    var device by rememberSaveable { mutableStateOf("") }
-    var retry by remember { mutableIntStateOf(0) }
-    var report by remember { mutableStateOf<Report?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var loading by remember { mutableStateOf(true) }
+/**
+ * What the dashboard and the timeline show: the picked day, range and device,
+ * and the report the server sent for them.
+ */
+class DashboardState(date: MutableState<String>, days: MutableState<Int>, device: MutableState<String>) {
+    /** "" is today */
+    var date by date
+    var days by days
+    /** "" is all devices */
+    var device by device
+    var report by mutableStateOf<Report?>(null)
+    var error by mutableStateOf<String?>(null)
+    var loading by mutableStateOf(true)
+    var retry by mutableIntStateOf(0)
 
-    LaunchedEffect(server, date, days, device, refresh, retry) {
-        loading = true
-        withContext(Dispatchers.IO) { runCatching { Stats.load(server, date, days, device) } }
-            .onSuccess {
-                report = it
-                error = null
-            }
-            .onFailure { error = it.message ?: it.toString() }
-        loading = false
+    fun openDay(day: String) {
+        date = day
+        days = 1
     }
+}
 
-    val current = report
-    Controls(
-        report = current,
-        days = days,
-        device = device,
-        loading = loading,
-        onDays = { days = it },
-        onDate = { date = it },
-        onDevice = { device = it },
-    )
+/** Loads the report again whenever the selection or [refresh] changes. */
+@Composable
+fun rememberDashboard(server: Server, refresh: Int): DashboardState {
+    val date = rememberSaveable { mutableStateOf("") }
+    val days = rememberSaveable { mutableStateOf(1) }
+    val device = rememberSaveable { mutableStateOf("") }
+    val state = remember { DashboardState(date, days, device) }
+    LaunchedEffect(server, state.date, state.days, state.device, refresh, state.retry) {
+        state.loading = true
+        withContext(Dispatchers.IO) { runCatching { Stats.load(server, state.date, state.days, state.device) } }
+            .onSuccess {
+                state.report = it
+                state.error = null
+            }
+            .onFailure { state.error = it.message ?: it.toString() }
+        state.loading = false
+    }
+    return state
+}
 
-    error?.let {
+/** Screen time of all devices from the server. [onOpenTimeline] gets the row of the activity view tapped. */
+@Composable
+fun Dashboard(state: DashboardState, onOpenTimeline: (Int) -> Unit) {
+    val current = state.report
+    Controls(state)
+
+    state.error?.let {
         Card {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Could not load the dashboard: $it")
-                OutlinedButton(onClick = { retry++ }) { Text("Retry") }
+                OutlinedButton(onClick = { state.retry++ }) { Text("Retry") }
             }
         }
     }
     if (current == null) return
 
-    val openDay = { day: String ->
-        date = day
-        days = 1
-    }
     SummaryCard(current)
     ChartCard(
         if (current.days == 1) "Per hour" else "Per day",
         current.timeline,
         current.today,
-        onOpenDay = openDay,
+        onOpenDay = state::openDay,
     )
-    if (current.strips.isNotEmpty()) ActivityCard(server, current, onOpenDay = openDay)
+    if (current.strips.isNotEmpty()) ActivityCard(current, onOpen = onOpenTimeline)
     if (current.days > 1) {
         ChartCard(
             "By hour of day · average per day",
@@ -153,17 +162,23 @@ fun Dashboard(server: Server, refresh: Int) {
     if (current.device.isEmpty()) UsageList("Devices · last active", current.devices)
 }
 
+/** The color of every category in the activity view, Canvas can't call composables. */
+@Composable
+fun categoryColors(report: Report): Map<String, Color> =
+    report.strips.flatMap { s -> s.segments.flatMap { listOf(topLevel(it.category), it.category) } }.distinct()
+        .associateWith { categoryColor(report.categoryOrder, it) }
+
+/** Day, week or 30 days, the date, and with [showDevices] the device. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun Controls(
-    report: Report?,
-    days: Int,
-    device: String,
-    loading: Boolean,
-    onDays: (Int) -> Unit,
-    onDate: (String) -> Unit,
-    onDevice: (String) -> Unit,
-) {
+fun Controls(state: DashboardState, showDevices: Boolean = true) {
+    val report = state.report
+    val days = state.days
+    val device = state.device
+    val loading = state.loading
+    val onDays = { value: Int -> state.days = value }
+    val onDate = { value: String -> state.date = value }
+    val onDevice = { value: String -> state.device = value }
     val context = LocalContext.current
     val ranges = listOf(1 to "Day", 7 to "Week", 30 to "30 days")
     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
@@ -200,6 +215,7 @@ private fun Controls(
         TextButton(enabled = report.date != report.today, onClick = { onDate("") }) { Text("Today") }
     }
 
+    if (!showDevices) return
     Row(
         Modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -221,7 +237,7 @@ private val dateFormat = DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)
 private fun formatDate(date: String) = LocalDate.parse(date).format(dateFormat)
 
 /** "Mon, 26 Oct 2026" or "20 Oct 2026 – 26 Oct 2026" */
-private fun period(report: Report) =
+fun period(report: Report) =
     if (report.days == 1) {
         val date = LocalDate.parse(report.date)
         date.dayOfWeek.getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.getDefault()) +
@@ -383,29 +399,14 @@ private fun ChartCard(title: String, buckets: List<UsageItem>, today: String, on
 /** When which category was used, per device for a day or per day for longer. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ActivityCard(server: Server, report: Report, onOpenDay: (String) -> Unit) {
+private fun ActivityCard(report: Report, onOpen: (Int) -> Unit) {
     val order = report.categoryOrder
     val shown = report.strips.flatMap { s -> s.segments.map { topLevel(it.category) } }.distinct()
     val legend = order.filter { it in shown } + shown.filter { it !in order }
     val track = MaterialTheme.colorScheme.surfaceVariant
-    // resolved here, Canvas can't call composables
-    val colors = (legend + report.strips.flatMap { s -> s.segments.map { it.category } }).distinct()
-        .associateWith { categoryColor(order, it) }
-    // the page the full screen timeline opens at, null while closed
-    var opened by rememberSaveable { mutableStateOf<Int?>(null) }
-    opened?.let { page ->
-        TimelineDialog(
-            server,
-            report,
-            subtitle = period(report),
-            initialPage = page,
-            colors = colors,
-            onOpenDay = onOpenDay,
-            onDismiss = { opened = null },
-        )
-    }
+    val colors = categoryColors(report)
 
-    Card(onClick = { opened = 0 }) {
+    Card(onClick = { onOpen(0) }) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -414,7 +415,7 @@ private fun ActivityCard(server: Server, report: Report, onOpenDay: (String) -> 
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    "Tap to enlarge ⤢",
+                    "Open timeline ›",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -430,7 +431,7 @@ private fun ActivityCard(server: Server, report: Report, onOpenDay: (String) -> 
             report.strips.forEachIndexed { i, strip ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.clickable { opened = i }.padding(vertical = 2.dp),
+                    modifier = Modifier.clickable { onOpen(i) }.padding(vertical = 2.dp),
                 ) {
                     Text(
                         strip.label,

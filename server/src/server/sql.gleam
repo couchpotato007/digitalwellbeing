@@ -58,6 +58,47 @@ WHERE id = ?1"
   #(sql, [dev.ParamInt(id)])
 }
 
+pub type CategoryTotals {
+  CategoryTotals(name: String, ms: Int)
+}
+
+pub fn category_totals(since_ms since_ms: Int) {
+  let sql =
+    "SELECT category AS name, CAST(sum(duration_ms) AS INTEGER) AS ms
+FROM events
+WHERE kind = 'window' AND start_ms >= ?1
+GROUP BY category"
+  #(sql, [dev.ParamInt(since_ms)], category_totals_decoder())
+}
+
+pub fn category_totals_decoder() -> decode.Decoder(CategoryTotals) {
+  use name <- decode.field(0, decode.string)
+  use ms <- decode.field(1, decode.int)
+  decode.success(CategoryTotals(name:, ms:))
+}
+
+pub type RecentUsage {
+  RecentUsage(device: String, kind: String, app: String, title: String, ms: Int)
+}
+
+pub fn recent_usage(since_ms since_ms: Int) {
+  let sql =
+    "SELECT device, kind, app, title, CAST(sum(duration_ms) AS INTEGER) AS ms
+FROM events
+WHERE start_ms >= ?1
+GROUP BY device, kind, app, title"
+  #(sql, [dev.ParamInt(since_ms)], recent_usage_decoder())
+}
+
+pub fn recent_usage_decoder() -> decode.Decoder(RecentUsage) {
+  use device <- decode.field(0, decode.string)
+  use kind <- decode.field(1, decode.string)
+  use app <- decode.field(2, decode.string)
+  use title <- decode.field(3, decode.string)
+  use ms <- decode.field(4, decode.int)
+  decode.success(RecentUsage(device:, kind:, app:, title:, ms:))
+}
+
 pub type Range {
   Range(
     date: String,

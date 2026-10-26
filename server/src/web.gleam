@@ -14,6 +14,7 @@ import gleam/pair
 import gleam/result
 import gleam/string
 import gleam/uri
+import rules
 import shared
 import sqlight
 import stats
@@ -31,9 +32,19 @@ pub fn handle_request(req: wisp.Request, ctx: Context) -> wisp.Response {
   case req.method, wisp.path_segments(req) {
     http.Get, [] -> dashboard(req, ctx)
     http.Get, ["categories"] -> categories_page(req, ctx)
+    http.Get, ["categories", "new"] -> new_category(req, ctx)
+    http.Get, ["categories", id] -> edit_category(ctx, id)
     http.Post, ["categories"] -> save_category(req, ctx)
     http.Post, ["categories", "defaults"] -> add_defaults(req, ctx)
+    http.Post, ["categories", "assign"] -> assign_category(req, ctx)
     http.Post, ["categories", id, "delete"] -> delete_category(req, ctx, id)
+    http.Get, ["api", "categories"] -> categories_json(ctx)
+    http.Post, ["api", "categories"] -> save_category_json(req, ctx)
+    http.Post, ["api", "categories", "preview"] -> preview_json(req, ctx)
+    http.Post, ["api", "categories", "defaults"] ->
+      api_rules_changed(ctx, db.add_rules(ctx.db, categories.defaults))
+    http.Post, ["api", "categories", "assign"] -> assign_json(req, ctx)
+    http.Delete, ["api", "categories", id] -> delete_category_json(ctx, id)
     http.Post, ["devices", device, "delete"] ->
       delete_device(req, ctx, decode_segment(device))
     http.Get, ["api", "stats"] -> stats_json(req, ctx)
@@ -178,16 +189,53 @@ fn block_json(req: wisp.Request, ctx: Context) -> wisp.Response {
 
 fn categories_page(req: wisp.Request, ctx: Context) -> wisp.Response {
   let error = wisp.get_query(req) |> list.key_find("error") |> result.unwrap("")
+  case rules.overview(ctx.db) {
+    Ok(overview) ->
+      wisp.html_response(dashboard.categories_page(overview, error), 200)
+    Error(err) -> db_error(err)
+  }
+}
+
+/// `?pattern=` starts it with that pattern, from the uncategorized list.
+fn new_category(req: wisp.Request, ctx: Context) -> wisp.Response {
+  let pattern =
+    wisp.get_query(req) |> list.key_find("pattern") |> result.unwrap("")
+  editor(ctx, categories.Rule(0, "", pattern, True, []), "", False)
+}
+
+fn edit_category(ctx: Context, id: String) -> wisp.Response {
+  let rule = {
+    use id <- result.try(int.parse(id) |> result.replace_error(Nil))
+    use rules <- result.try(db.rules(ctx.db) |> result.replace_error(Nil))
+    list.find(rules, fn(rule) { rule.id == id })
+  }
+  case rule {
+    Ok(rule) -> editor(ctx, rule, "", True)
+    Error(Nil) -> wisp.not_found()
+  }
+}
+
+/// The editor page, with what the rule matches if `preview` is set and it is
+/// valid.
+fn editor(
+  ctx: Context,
+  rule: categories.Rule,
+  error: String,
+  preview: Bool,
+) -> wisp.Response {
   let page = {
-    use rules <- result.try(db.rules(ctx.db))
-    use devices <- result.try(db.device_names(ctx.db))
-    use last_30_days <- result.try(db.filter(ctx.db, "", 30, ""))
-    use apps <- result.try(db.uncategorized_apps(ctx.db, last_30_days))
-    use titles <- result.map(db.uncategorized_titles(ctx.db, last_30_days))
-    dashboard.categories_page(rules, devices, error, [
-      #("Uncategorized apps and domains · 30 days", apps),
-      #("Uncategorized window titles · 30 days", titles),
-    ])
+    use overview <- result.try(rules.overview(ctx.db))
+    use matches <- result.map(case preview {
+      True -> rules.preview(ctx.db, rule)
+      False -> Ok(Error(""))
+    })
+    let #(error, matches) = case error, matches {
+      "", Error("") -> #("", option.None)
+      "", Error(message) -> #(message, option.None)
+      _, Ok(preview) -> #(error, option.Some(preview))
+      _, Error(_) -> #(error, option.None)
+    }
+    dashboard.category_editor(rule, overview, error, matches)
   }
   case page {
     Ok(html) -> wisp.html_response(html, 200)
@@ -195,31 +243,183 @@ fn categories_page(req: wisp.Request, ctx: Context) -> wisp.Response {
   }
 }
 
+/// Saves the editor's form, or shows what it would match with
+/// `action=preview`. Errors show the form again with what was entered.
 fn save_category(req: wisp.Request, ctx: Context) -> wisp.Response {
   use req <- wisp.csrf_known_header_protection(req)
   use form <- wisp.require_form(req)
   let field = fn(name) { list.key_find(form.values, name) |> result.unwrap("") }
-  let rule =
+  let id = field("id") |> int.parse |> result.unwrap(0)
+  let patterns = string.split(field("patterns"), "\n")
+  let ignore_case = field("ignore_case") == "on"
+  let devices =
+    list.filter(form.values, fn(v) { v.0 == "devices" })
+    |> list.map(pair.second)
+  // what was entered, to show it again
+  let entered =
     categories.Rule(
-      id: 0,
-      name: categories.normalize_name(field("name")),
-      regex: field("regex"),
-      ignore_case: field("ignore_case") == "on",
-      devices: list.filter(form.values, fn(v) { v.0 == "devices" })
-        |> list.map(pair.second),
+      id,
+      categories.normalize_name(field("name")),
+      categories.join_patterns(patterns),
+      ignore_case,
+      devices,
     )
-  let valid = case rule.name, rule.regex {
-    "", _ -> Error("The category needs a name")
-    _, "" -> Error("The category needs a regex")
-    _, _ -> categories.compile(rule.regex, rule.ignore_case)
+  case rules.parse(id, field("name"), patterns, ignore_case, devices) {
+    Error(message) -> editor(ctx, entered, message, False)
+    Ok(rule) ->
+      case field("action") {
+        "preview" -> editor(ctx, rule, "", True)
+        _ -> rules_changed(ctx, db.save_rule(ctx.db, id_option(id), rule))
+      }
   }
-  case valid {
-    Error(message) ->
+}
+
+fn id_option(id: Int) -> option.Option(Int) {
+  case id {
+    0 -> option.None
+    id -> option.Some(id)
+  }
+}
+
+/// Adds the text of an uncategorized app or title as a pattern to a rule.
+fn assign_category(req: wisp.Request, ctx: Context) -> wisp.Response {
+  use req <- wisp.csrf_known_header_protection(req)
+  use form <- wisp.require_form(req)
+  let field = fn(name) { list.key_find(form.values, name) |> result.unwrap("") }
+  case assign(ctx, field("id"), field("text")) {
+    Ok(Ok(Nil)) -> wisp.redirect("/categories")
+    Ok(Error(message)) ->
       wisp.redirect("/categories?error=" <> uri.percent_encode(message))
-    Ok(_) -> {
-      let id = field("id") |> int.parse |> option.from_result
-      rules_changed(ctx, db.save_rule(ctx.db, id, rule))
+    Error(err) -> db_error(err)
+  }
+}
+
+/// Error(message) if there is no rule with the id.
+fn assign(
+  ctx: Context,
+  id: String,
+  text: String,
+) -> Result(Result(Nil, String), sqlight.Error) {
+  use all <- result.try(db.rules(ctx.db))
+  let rule =
+    int.parse(id)
+    |> result.try(fn(id) { list.find(all, fn(rule) { rule.id == id }) })
+  case rule {
+    Error(Nil) -> Ok(Error("Pick a category"))
+    Ok(rule) -> {
+      let changed = rules.add_pattern(rule, text)
+      use _ <- result.try(db.save_rule(ctx.db, option.Some(rule.id), changed))
+      use rules <- result.try(db.rules(ctx.db))
+      use _ <- result.map(db.recategorize(ctx.db, categories.categorizer(rules)))
+      Ok(Nil)
     }
+  }
+}
+
+fn categories_json(ctx: Context) -> wisp.Response {
+  case rules.overview(ctx.db) {
+    Ok(overview) ->
+      rules.overview_to_json(overview)
+      |> json.to_string
+      |> wisp.json_response(200)
+    Error(err) -> db_error(err)
+  }
+}
+
+/// `{"id"?, "name", "patterns": [...], "ignore_case", "devices": [...]}`
+fn rule_decoder() -> decode.Decoder(
+  #(Int, String, List(String), Bool, List(String)),
+) {
+  use id <- decode.optional_field("id", 0, decode.int)
+  use name <- decode.field("name", decode.string)
+  use patterns <- decode.field("patterns", decode.list(decode.string))
+  use ignore_case <- decode.optional_field("ignore_case", True, decode.bool)
+  use devices <- decode.optional_field(
+    "devices",
+    [],
+    decode.list(decode.string),
+  )
+  decode.success(#(id, name, patterns, ignore_case, devices))
+}
+
+/// The rule of a JSON body, or the response for why there is none.
+fn require_rule(
+  req: wisp.Request,
+  next: fn(categories.Rule) -> wisp.Response,
+) -> wisp.Response {
+  use body <- wisp.require_json(req)
+  case decode.run(body, rule_decoder()) {
+    Error(_) -> wisp.unprocessable_content()
+    Ok(#(id, name, patterns, ignore_case, devices)) ->
+      case rules.parse(id, name, patterns, ignore_case, devices) {
+        Error(message) -> error_json(message)
+        Ok(rule) -> next(rule)
+      }
+  }
+}
+
+fn error_json(message: String) -> wisp.Response {
+  json.object([#("error", json.string(message))])
+  |> json.to_string
+  |> wisp.json_response(422)
+}
+
+fn save_category_json(req: wisp.Request, ctx: Context) -> wisp.Response {
+  use rule <- require_rule(req)
+  api_rules_changed(ctx, db.save_rule(ctx.db, id_option(rule.id), rule))
+}
+
+fn preview_json(req: wisp.Request, ctx: Context) -> wisp.Response {
+  use rule <- require_rule(req)
+  case rules.preview(ctx.db, rule) {
+    Ok(Ok(preview)) ->
+      rules.preview_to_json(preview)
+      |> json.to_string
+      |> wisp.json_response(200)
+    Ok(Error(message)) -> error_json(message)
+    Error(err) -> db_error(err)
+  }
+}
+
+/// `{"id", "text"}` adds the text as a pattern to the rule with the id.
+fn assign_json(req: wisp.Request, ctx: Context) -> wisp.Response {
+  use body <- wisp.require_json(req)
+  let decoder = {
+    use id <- decode.field("id", decode.int)
+    use text <- decode.field("text", decode.string)
+    decode.success(#(id, text))
+  }
+  case decode.run(body, decoder) {
+    Error(_) -> wisp.unprocessable_content()
+    Ok(#(id, text)) ->
+      case assign(ctx, int.to_string(id), text) {
+        Ok(Ok(Nil)) -> wisp.no_content()
+        Ok(Error(message)) -> error_json(message)
+        Error(err) -> db_error(err)
+      }
+  }
+}
+
+fn delete_category_json(ctx: Context, id: String) -> wisp.Response {
+  case int.parse(id) {
+    Ok(id) -> api_rules_changed(ctx, db.delete_rule(ctx.db, id))
+    Error(Nil) -> wisp.not_found()
+  }
+}
+
+/// Like rules_changed, for the API.
+fn api_rules_changed(
+  ctx: Context,
+  changed: Result(Nil, sqlight.Error),
+) -> wisp.Response {
+  let done = {
+    use _ <- result.try(changed)
+    use rules <- result.try(db.rules(ctx.db))
+    db.recategorize(ctx.db, categories.categorizer(rules))
+  }
+  case done {
+    Ok(Nil) -> wisp.no_content()
+    Error(err) -> db_error(err)
   }
 }
 

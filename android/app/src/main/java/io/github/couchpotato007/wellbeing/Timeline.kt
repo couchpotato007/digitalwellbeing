@@ -1,17 +1,24 @@
 package io.github.couchpotato007.wellbeing
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.material.icons.Icons
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.runtime.key
+import kotlinx.coroutines.delay
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Card
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -28,7 +35,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
@@ -38,9 +44,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
-import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ScrollableTabRow
@@ -56,7 +59,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -69,7 +71,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
@@ -78,9 +79,6 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -96,58 +94,74 @@ private class Zoom {
 }
 
 /**
- * The activity strips full screen, one page per device (or day) to swipe
+ * The activity strips as a tab, one page per device (or day) to swipe
  * between, each a day from top to bottom. Pinch or the buttons zoom, a tap on
- * a block shows what it was. [colors] has the color of every category.
+ * a block shows its apps below the timeline.
  */
 @Composable
-fun TimelineDialog(
-    server: Server,
-    report: Report,
-    subtitle: String,
-    initialPage: Int,
-    colors: Map<String, Color>,
-    onOpenDay: (String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val visible = remember { MutableTransitionState(false).apply { targetState = true } }
-    // dismissed once the exit animation is done
-    LaunchedEffect(Unit) {
-        snapshotFlow { !visible.targetState && visible.isIdle }.first { it }
-        onDismiss()
-    }
-    val close = { visible.targetState = false }
+fun TimelineScreen(server: Server, state: DashboardState, initialPage: Int) {
+    val report = state.report
+    // the block on its own page, null for the timeline
+    var opened by remember { mutableStateOf<Opened?>(null) }
+    // the block last looked at, pointed out when coming back
+    var back by remember { mutableStateOf<Segment?>(null) }
 
-    Dialog(
-        onDismissRequest = close,
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-    ) {
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
+            Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Timeline", style = MaterialTheme.typography.headlineMedium)
+                Controls(state, showDevices = false)
+            }
+            when {
+                report == null -> Text(state.error ?: "Loading…", Modifier.padding(16.dp))
+                report.strips.isEmpty() -> Text(
+                    if (report.days > 1) "The timeline shows up to 31 days." else "Nothing recorded on this day.",
+                    Modifier.padding(16.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                // a new pager for another day, range or device
+                else -> key(report.date, report.days, report.device) {
+                    TimelineContent(server, report, initialPage, categoryColors(report), state::openDay, back) {
+                        back = null
+                        opened = it
+                    }
+                }
+            }
+        }
+
+        // over the timeline, which keeps its page and scroll position below
         AnimatedVisibility(
-            visible,
-            enter = fadeIn(tween(220)) + scaleIn(tween(260), initialScale = 0.9f),
-            exit = fadeOut(tween(180)) + scaleOut(tween(180), targetScale = 0.9f),
+            opened != null && report != null,
+            enter = slideInHorizontally(tween(300)) { it } + fadeIn(tween(300)),
+            exit = slideOutHorizontally(tween(250)) { it } + fadeOut(tween(250)),
         ) {
+            // the last one stays while sliding out
+            val shown = remember { mutableStateOf<Opened?>(null) }
+            opened?.let { shown.value = it }
+            val current = shown.value ?: return@AnimatedVisibility
+            val currentReport = report ?: return@AnimatedVisibility
             Surface(Modifier.fillMaxSize()) {
-                Column(Modifier.safeDrawingPadding()) {
-                    TimelineContent(server, report, subtitle, initialPage, colors, onClose = close, onOpenDay = {
-                        onOpenDay(it)
-                        close()
-                    })
+                BlockDetail(server, current, currentReport, categoryColors(currentReport)) { last ->
+                    back = last
+                    opened = null
                 }
             }
         }
     }
 }
 
+/** A block opened on its own page, with the blocks of its device to step through. */
+private data class Opened(val strip: Strip, val device: String, val blocks: List<Segment>, val index: Int)
+
 @Composable
 private fun TimelineContent(
     server: Server,
     report: Report,
-    subtitle: String,
     initialPage: Int,
     colors: Map<String, Color>,
-    onClose: () -> Unit,
     onOpenDay: (String) -> Unit,
+    highlight: Segment?,
+    onOpen: (Opened) -> Unit,
 ) {
     val strips = report.strips
     val pager = rememberPagerState(initialPage.coerceIn(0, strips.lastIndex)) { strips.size }
@@ -161,15 +175,12 @@ private fun TimelineContent(
         }
     }
 
-    Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        TextButton(onClick = onClose) { Text("✕", style = MaterialTheme.typography.titleLarge) }
-        Column(Modifier.weight(1f)) {
-            Text(
-                if (report.days == 1) "Activity per device" else "Activity per day",
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+    Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            if (report.days == 1) "Per device" else "Per day",
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.weight(1f),
+        )
         TextButton(enabled = zoom.hourDp > MIN_HOUR_DP, onClick = { zoomTo(zoom.hourDp / 1.6f) }) {
             Text("−", style = MaterialTheme.typography.titleLarge)
         }
@@ -214,14 +225,23 @@ private fun TimelineContent(
         ) {
             // rows of a device are one device, rows of a day the devices picked
             val device = if (strips[page].date.isEmpty()) strips[page].label else report.device
-            TimelinePage(server, device, strips[page], report.categoryOrder, report.deviceOs, colors, zoom, onOpenDay)
+            TimelinePage(
+                device,
+                strips[page],
+                report.categoryOrder,
+                report.deviceOs,
+                colors,
+                zoom,
+                onOpenDay,
+                highlight,
+                onOpen,
+            )
         }
     }
 }
 
 @Composable
 private fun TimelinePage(
-    server: Server,
     device: String,
     strip: Strip,
     order: List<String>,
@@ -229,14 +249,16 @@ private fun TimelinePage(
     colors: Map<String, Color>,
     zoom: Zoom,
     onOpenDay: (String) -> Unit,
+    highlight: Segment?,
+    onOpen: (Opened) -> Unit,
 ) {
     // a column per device, so a day of all devices keeps them apart
     val lanes = strip.segments.map { it.device }.distinct().sorted()
     // blocks closer than a few dp are one, too small to tell apart anyway
     val blocks = blocks(strip.segments, (GAP_DP / zoom.hourDp * HOUR_MS).toLong())
-    // the block whose sheet is open
-    var selected by remember(strip) { mutableStateOf<Segment?>(null) }
-    val dim by animateFloatAsState(if (selected == null) 0f else 1f, tween(250), label = "dim")
+    // stands out for a moment after coming back from it
+    var flash by remember(strip) { mutableStateOf<Segment?>(null) }
+    val dim by animateFloatAsState(if (flash == null) 0f else 1f, tween(250), label = "dim")
     // blocks grow in from the left when the page is first shown
     val reveal = remember(strip) { Animatable(0f) }
     LaunchedEffect(strip) { reveal.animateTo(1f, tween(700, easing = FastOutSlowInEasing)) }
@@ -244,18 +266,22 @@ private fun TimelinePage(
 
     val scroll = rememberScrollState()
     val density = LocalDensity.current
-    val scrollTo = { ms: Long ->
-        with(density) { (zoom.hourDp * (ms - strip.startMs) / HOUR_MS - 32).dp.toPx() }.toInt().coerceAtLeast(0)
-    }
+    val yOf = { ms: Long -> with(density) { (zoom.hourDp * (ms - strip.startMs) / HOUR_MS).dp.toPx() } }
     // opens at the first activity, a bit above it
     LaunchedEffect(strip) {
         val first = strip.segments.firstOrNull() ?: return@LaunchedEffect
-        scroll.animateScrollTo(scrollTo(first.startMs), tween(600))
+        scroll.animateScrollTo((yOf(first.startMs) - with(density) { 32.dp.toPx() }).toInt().coerceAtLeast(0), tween(600))
     }
-    // the picked block moves to the top, above the sheet
-    LaunchedEffect(selected) {
-        val block = selected ?: return@LaunchedEffect
-        scroll.animateScrollTo(scrollTo(block.startMs), tween(400))
+    // the block stepped to on its page may be elsewhere in the day
+    LaunchedEffect(highlight) {
+        val block = highlight?.takeIf { it in blocks } ?: return@LaunchedEffect
+        val top = yOf(block.startMs)
+        if (top < scroll.value || yOf(block.endMs) > scroll.value + scroll.viewportSize) {
+            scroll.animateScrollTo((top - scroll.viewportSize / 3).toInt().coerceAtLeast(0), tween(400))
+        }
+        flash = block
+        delay(1200)
+        flash = null
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -292,26 +318,14 @@ private fun TimelinePage(
                 }
                 .verticalScroll(scroll)
         ) {
-            DayCanvas(strip, lanes, blocks, colors, zoom.hourDp, selected, dim, reveal.value) { tapped ->
-                if (tapped != null) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                selected = tapped
+            DayCanvas(strip, lanes, blocks, colors, zoom.hourDp, flash, dim, reveal.value) { tapped ->
+                if (tapped == null) return@DayCanvas
+                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                // the arrows on its page step through the blocks of the same device
+                val sameDevice = blocks.filter { it.device == tapped.device }
+                onOpen(Opened(strip, tapped.device.ifEmpty { device }, sameDevice, sameDevice.indexOf(tapped)))
             }
         }
-    }
-
-    selected?.let { block ->
-        // the arrows step through the blocks of the same device
-        val sameDevice = blocks.filter { it.device == block.device }
-        BlockSheet(
-            server,
-            block.device.ifEmpty { device },
-            strip,
-            sameDevice,
-            sameDevice.indexOf(block).coerceAtLeast(0),
-            colors,
-            onSelect = { selected = sameDevice[it] },
-            onDismiss = { selected = null },
-        )
     }
 }
 
@@ -392,7 +406,8 @@ private fun PageSummary(
             }
         }
         Text(
-            "Tap a block to see its apps · pinch to zoom",
+            "Tap a block to open it · pinch to zoom · swipe for the next " +
+                if (strip.date.isEmpty()) "device" else "day",
             style = MaterialTheme.typography.labelSmall,
             color = muted,
         )
@@ -537,111 +552,198 @@ private class Geometry(density: Density, width: Float, height: Float, private va
 }
 
 /**
- * The apps and window titles of a block, loaded from the server, with
- * buttons to step to the block before or after.
+ * A block on its own page: when it was, where in the day, and its apps and
+ * window titles from the server. Swipe or the arrows step to the device's
+ * block before or after, [onBack] gets the one shown last.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun BlockSheet(
+private fun BlockDetail(server: Server, opened: Opened, report: Report, colors: Map<String, Color>, onBack: (Segment) -> Unit) {
+    val blocks = opened.blocks
+    val pager = rememberPagerState(opened.index.coerceIn(0, blocks.lastIndex)) { blocks.size }
+    val scope = rememberCoroutineScope()
+    val back = { onBack(blocks[pager.currentPage]) }
+    BackHandler(onBack = back)
+    val os = report.deviceOs[opened.device]
+
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+            Column(Modifier.weight(1f)) {
+                Text(opened.device + (os?.let { " · " + osName(it) } ?: ""), style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if (opened.strip.date.isEmpty()) period(report) else opened.strip.label,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(
+                enabled = pager.currentPage > 0,
+                onClick = { scope.launch { pager.animateScrollToPage(pager.currentPage - 1) } },
+            ) { Text("‹", style = MaterialTheme.typography.titleLarge) }
+            Text("${pager.currentPage + 1} / ${blocks.size}", style = MaterialTheme.typography.labelMedium)
+            TextButton(
+                enabled = pager.currentPage < blocks.lastIndex,
+                onClick = { scope.launch { pager.animateScrollToPage(pager.currentPage + 1) } },
+            ) { Text("›", style = MaterialTheme.typography.titleLarge) }
+        }
+
+        HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1) { page ->
+            BlockPage(server, opened.device, opened.strip, blocks, blocks[page], colors)
+        }
+    }
+}
+
+@Composable
+private fun BlockPage(
     server: Server,
     device: String,
     strip: Strip,
     blocks: List<Segment>,
-    index: Int,
+    block: Segment,
     colors: Map<String, Color>,
-    onSelect: (Int) -> Unit,
-    onDismiss: () -> Unit,
 ) {
-    val segment = blocks[index]
-    val color = colors[segment.category] ?: Color.Gray
-    var usage by remember(segment) { mutableStateOf<BlockUsage?>(null) }
-    var error by remember(segment) { mutableStateOf<String?>(null) }
-    LaunchedEffect(segment) {
+    val color = colors[block.category] ?: Color.Gray
+    val length = (block.endMs - block.startMs).coerceAtLeast(1)
+    var usage by remember(block) { mutableStateOf<BlockUsage?>(null) }
+    var error by remember(block) { mutableStateOf<String?>(null) }
+    var retry by remember(block) { mutableStateOf(0) }
+    LaunchedEffect(block, retry) {
+        error = null
         withContext(Dispatchers.IO) {
-            runCatching { Stats.block(server, device, segment.category, segment.startMs, segment.endMs) }
+            runCatching { Stats.block(server, device, block.category, block.startMs, block.endMs) }
         }
             .onSuccess { usage = it }
-            .onFailure { error = it.message ?: it.toString() }
+            .onFailure { error = Sync.describe(it) }
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState()) {
-        Column(
-            Modifier
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 24.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(width = 6.dp, height = 40.dp).clip(RoundedCornerShape(3.dp)).background(color))
-                Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                    Text(segment.category, style = MaterialTheme.typography.titleLarge)
-                    if (device.isNotEmpty()) {
-                        Text(device, style = MaterialTheme.typography.labelMedium, color = color)
-                    }
-                    Text(
-                        clock(segment.startMs - strip.startMs) + " – " + clock(segment.endMs - strip.startMs) +
-                            " · " + formatDuration(segment.endMs - segment.startMs),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                TextButton(enabled = index > 0, onClick = { onSelect(index - 1) }) {
-                    Text("‹", style = MaterialTheme.typography.titleLarge)
-                }
-                TextButton(enabled = index < blocks.lastIndex, onClick = { onSelect(index + 1) }) {
-                    Text("›", style = MaterialTheme.typography.titleLarge)
-                }
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        // the block in its category's color
+        Surface(color = color, contentColor = Color.White, shape = RoundedCornerShape(24.dp)) {
+            Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(block.category, style = MaterialTheme.typography.titleLarge)
+                Text(formatDuration(length), style = MaterialTheme.typography.displaySmall)
+                Text(
+                    clock(block.startMs - strip.startMs) + " – " + clock(block.endMs - strip.startMs),
+                    style = MaterialTheme.typography.titleMedium,
+                )
             }
+        }
 
-            val loaded = usage
-            AnimatedContent(loaded to error, label = "block") { (loaded, error) ->
-                when {
-                    error != null -> Text("Could not load the apps: $error", style = MaterialTheme.typography.bodySmall)
-                    loaded == null -> Box(Modifier.fillMaxWidth().height(96.dp), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+        DayPosition(strip, blocks, block, colors)
+
+        val loaded = usage
+        AnimatedContent(Triple(loaded, error, retry), label = "usage") { (loaded, error, _) ->
+            when {
+                error != null -> Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Could not load the apps: $error", style = MaterialTheme.typography.bodyMedium)
+                        TextButton(onClick = { retry++ }) { Text("Retry") }
                     }
-                    else -> Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        BlockList("Apps", loaded.apps, color)
-                        BlockList("Window titles", loaded.titles, color)
-                    }
+                }
+                loaded == null -> Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
+                }
+                else -> Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    BlockList("Apps", loaded.apps, length, color)
+                    BlockList("Window titles", loaded.titles, length, color)
                 }
             }
         }
     }
 }
 
-/** Rows with a meter, like the dashboard's lists but without a card. */
+/** The day of the device as one bar, the block stands out, its neighbors are faint. */
 @Composable
-private fun BlockList(title: String, items: List<UsageItem>, color: Color) {
+private fun DayPosition(strip: Strip, blocks: List<Segment>, block: Segment, colors: Map<String, Color>) {
+    val track = MaterialTheme.colorScheme.surfaceVariant
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val marker = MaterialTheme.colorScheme.onSurface
+    val length = (strip.endMs - strip.startMs).coerceAtLeast(1).toFloat()
+    val grow = remember(block) { Animatable(0f) }
+    LaunchedEffect(block) { grow.animateTo(1f, tween(500, easing = FastOutSlowInEasing)) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("In the day", style = MaterialTheme.typography.labelLarge, color = muted)
+        Canvas(Modifier.fillMaxWidth().height(36.dp)) {
+            val barTop = 8.dp.toPx()
+            val barHeight = size.height - 2 * barTop
+            drawRoundRect(track, Offset(0f, barTop), Size(size.width, barHeight), CornerRadius(6.dp.toPx()))
+            val x = { ms: Long -> size.width * (ms - strip.startMs) / length }
+            blocks.forEach { b ->
+                val w = (x(b.endMs) - x(b.startMs)).coerceAtLeast(1.dp.toPx())
+                drawRect((colors[b.category] ?: Color.Gray).copy(alpha = 0.3f), Offset(x(b.startMs), barTop), Size(w, barHeight))
+            }
+            // the block grows out of its middle to full height
+            val w = (x(block.endMs) - x(block.startMs)).coerceAtLeast(4.dp.toPx())
+            val h = barHeight + (size.height - barHeight) * grow.value
+            drawRoundRect(
+                colors[block.category] ?: Color.Gray,
+                Offset(x(block.startMs), (size.height - h) / 2),
+                Size(w, h),
+                CornerRadius(3.dp.toPx()),
+            )
+            drawRoundRect(
+                marker,
+                Offset(x(block.startMs), (size.height - h) / 2),
+                Size(w, h),
+                CornerRadius(3.dp.toPx()),
+                style = Stroke(1.5.dp.toPx()),
+            )
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            listOf("0", "6", "12", "18", "24").forEach {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = muted)
+            }
+        }
+    }
+}
+
+/** Rows with a meter and their share of the block's [length]. */
+@Composable
+private fun BlockList(title: String, items: List<UsageItem>, length: Long, color: Color) {
     if (items.isEmpty()) return
     val max = items.maxOf { it.ms }.coerceAtLeast(1)
     val track = MaterialTheme.colorScheme.surfaceVariant
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        items.forEach { item ->
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Row {
-                    Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                    Text(formatDuration(item.ms), modifier = Modifier.padding(start = 12.dp))
-                }
-                if (item.detail.isNotEmpty()) {
-                    Text(
-                        item.detail,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(track)) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth(item.ms.toFloat() / max)
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(color)
-                    )
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            items.forEach { item ->
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(item.name, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        Column(Modifier.padding(start = 12.dp), horizontalAlignment = Alignment.End) {
+                            Text(formatDuration(item.ms), style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "${(item.ms * 100 / length).coerceAtMost(100)}%",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (item.detail.isNotEmpty()) {
+                        Text(
+                            item.detail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(track)) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth(item.ms.toFloat() / max)
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(color)
+                        )
+                    }
                 }
             }
         }

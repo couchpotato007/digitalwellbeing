@@ -107,6 +107,68 @@ pub const defaults = [
   Rule(0, "Shopping", "amazon|ebay|etsy|aliexpress|\\btemu\\b", True, []),
 ]
 
+/// The alternatives of a regex, split at the `|` that are not inside a
+/// group, a class or escaped: "a|(b|c)|d" -> ["a", "(b|c)", "d"]. Editors
+/// show them one per line, `join_patterns` puts them back together.
+pub fn split_patterns(regex: String) -> List(String) {
+  let #(done, current, _, _, _) =
+    string.to_graphemes(regex)
+    |> list.fold(#([], "", 0, False, False), fn(state, char) {
+      let #(done, current, depth, in_class, escaped) = state
+      case char {
+        _ if escaped -> #(done, current <> char, depth, in_class, False)
+        "\\" -> #(done, current <> char, depth, in_class, True)
+        "[" if !in_class -> #(done, current <> char, depth, True, False)
+        "]" if in_class -> #(done, current <> char, depth, False, False)
+        "(" if !in_class -> #(done, current <> char, depth + 1, in_class, False)
+        ")" if !in_class -> #(done, current <> char, depth - 1, in_class, False)
+        "|" if !in_class && depth == 0 -> #(
+          [current, ..done],
+          "",
+          depth,
+          in_class,
+          False,
+        )
+        _ -> #(done, current <> char, depth, in_class, False)
+      }
+    })
+  [current, ..done]
+  |> list.reverse
+  |> list.map(string.trim)
+  |> list.filter(fn(pattern) { pattern != "" })
+}
+
+/// The regex of patterns, empty ones left out.
+pub fn join_patterns(patterns: List(String)) -> String {
+  list.map(patterns, string.trim)
+  |> list.filter(fn(pattern) { pattern != "" })
+  |> string.join("|")
+}
+
+/// `text` as a pattern that matches only itself: "x.com" -> "x\\.com"
+pub fn escape(text: String) -> String {
+  string.to_graphemes(text)
+  |> list.map(fn(char) {
+    case string.contains("\\^$.|?*+()[]{}", char) {
+      True -> "\\" <> char
+      False -> char
+    }
+  })
+  |> string.concat
+}
+
+/// Whether `rule` matches an event, regardless of deeper rules.
+pub fn matches(
+  rule: Rule,
+  regex: Regexp,
+  device: String,
+  app: String,
+  title: String,
+) -> Bool {
+  { rule.devices == [] || list.contains(rule.devices, device) }
+  && { regexp.check(regex, app) || regexp.check(regex, title) }
+}
+
 /// "Work>  Programming " -> "Work > Programming"
 pub fn normalize_name(name: String) -> String {
   string.split(name, ">")

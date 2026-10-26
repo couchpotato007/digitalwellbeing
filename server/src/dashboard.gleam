@@ -1,4 +1,4 @@
-import categories.{type Rule, Rule}
+import categories.{type Rule}
 import db.{type Usage}
 import gleam/dict
 import gleam/float
@@ -6,11 +6,13 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order
+import gleam/result
 import gleam/string
 import gleam/uri
 import lustre/attribute.{class, href, style}
 import lustre/element.{type Element}
 import lustre/element/html.{text}
+import rules
 import stats.{type Report, type Strip}
 
 // --c0 to --c7 are the category colors, in the order of stats.color_slot
@@ -70,16 +72,47 @@ section { background: var(--card); border: 1px solid var(--line); border-radius:
 .c0 { background: var(--c0) !important; } .c1 { background: var(--c1) !important; } .c2 { background: var(--c2) !important; }
 .c3 { background: var(--c3) !important; } .c4 { background: var(--c4) !important; } .c5 { background: var(--c5) !important; }
 .c6 { background: var(--c6) !important; } .c7 { background: var(--c7) !important; } .cx { background: var(--gray) !important; }
-.rule { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto; gap: 8px;
-  align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
-.rule:first-of-type { border-top: 0; }
-@media (max-width: 600px) { .rule { grid-template-columns: minmax(0, 1fr); } .strip { grid-template-columns: 64px minmax(0, 1fr); } }
+@media (max-width: 600px) { .strip { grid-template-columns: 64px minmax(0, 1fr); } }
 input:not([type=checkbox]), button { font: inherit; color: inherit; border: 1px solid var(--line);
   border-radius: 6px; padding: 5px 8px; min-width: 0; background: var(--bg); }
 button { background: var(--card); cursor: pointer; }
 .pills input { padding: 2px 8px; border-radius: 99px; background: var(--card); }
 .checks { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--muted); }
 .error { color: #d0453a; margin: 0 0 8px; } p { margin: 0 0 8px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.toolbar input[type=search] { flex: 1 1 220px; }
+.toolbar form { margin: 0; }
+a.button { display: inline-block; text-decoration: none; border: 1px solid var(--line); border-radius: 6px;
+  padding: 5px 10px; background: var(--card); }
+.primary { background: var(--bar) !important; color: #fff !important; border-color: var(--bar) !important; }
+.danger { color: #d0453a; }
+.group { padding: 8px 16px; }
+.group-head { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
+.group-head .muted { margin-left: auto; font-size: 13px; }
+.cat { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 10px 8px;
+  border-top: 1px solid var(--line); text-decoration: none; border-radius: 6px; }
+.cat:hover { background: var(--bg); }
+.cat-name { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.cat .t { color: var(--muted); }
+.chips { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px; }
+.chip { font: 12px/1.6 ui-monospace, monospace; padding: 0 7px; border-radius: 99px; background: var(--bg);
+  border: 1px solid var(--line); color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.chip.more { font-family: inherit; }
+.badge { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+.assign { grid-column: 1 / -1; display: flex; gap: 6px; margin: 2px 0 0; }
+.assign select { flex: 1; min-width: 0; }
+select { font: inherit; color: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px;
+  background: var(--bg); }
+.editor section { display: grid; gap: 6px; }
+.editor label { font-size: 13px; font-weight: 600; margin-top: 10px; }
+.editor .checks label { font-weight: 400; margin: 0; }
+.editor textarea { font: 13px/1.6 ui-monospace, monospace; color: inherit; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 8px; resize: vertical; }
+.help { color: var(--muted); font-size: 12px; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.actions .danger { margin-left: auto; }
+[hidden] { display: none !important; }
 "
 
 /// Link to the dashboard with another date, number of days or device.
@@ -454,19 +487,28 @@ fn document(title: String, children: List(Element(msg))) -> String {
   |> element.to_document_string
 }
 
-/// The category rules, one form each, and what has no category yet.
-pub fn categories_page(
-  rules: List(Rule),
-  devices: List(String),
-  error: String,
-  sections: List(#(String, List(Usage))),
-) -> String {
-  // devices of rules might not have sent anything yet
-  let devices =
-    list.flat_map(rules, fn(rule) { rule.devices })
-    |> list.append(devices)
+/// All categories as a tree, grouped by their top level, each with its
+/// patterns and time, and below what has no category yet.
+pub fn categories_page(overview: rules.Overview, error: String) -> String {
+  let order = overview.category_order
+  let groups =
+    list.group(overview.rules, fn(entry) { stats.top_level({ entry.0 }.name) })
+  // groups in the colors' order, the rest after it by name
+  let group_names =
+    list.filter(order, dict.has_key(groups, _))
+    |> list.append(
+      dict.keys(groups)
+      |> list.filter(fn(name) { !list.contains(order, name) })
+      |> list.sort(string.compare),
+    )
+  let names =
+    list.map(overview.rules, fn(entry) { { entry.0 }.name })
     |> list.unique
     |> list.sort(string.compare)
+  let missing_defaults =
+    list.any(categories.defaults, fn(default) {
+      !list.contains(names, default.name)
+    })
   document("Categories", [
     html.header([], [
       html.h1([], [text("Categories")]),
@@ -475,112 +517,378 @@ pub fn categories_page(
     html.section([], [
       html.p([class("muted")], [
         text(
-          "Every app and window title gets the deepest category whose regex
-          matches it (for browser tabs: the domain and tab title). Use > for
-          subcategories, like Work > Programming. A rule without devices
-          applies to all of them.",
+          "Every app and window title gets the deepest category with a matching
+          pattern (for browser tabs: the domain and tab title). A rule without
+          devices applies to all of them.",
         ),
       ]),
       case error {
         "" -> element.none()
         error -> html.p([class("error")], [text(error)])
       },
-      case
-        list.any(categories.defaults, fn(default) {
-          !list.any(rules, fn(rule) { rule.name == default.name })
-        })
-      {
-        True ->
-          html.form(
-            [attribute.method("post"), attribute.action("/categories/defaults")],
-            [html.button([], [text("Add missing default categories")])],
-          )
-        False -> element.none()
-      },
-      ..list.map(rules, fn(rule) { rule_form(Some(rule.id), rule, devices) })
-      |> list.append([rule_form(None, Rule(0, "", "", True, []), devices)])
+      html.div([class("toolbar")], [
+        html.input([
+          attribute.type_("search"),
+          attribute.id("q"),
+          attribute.placeholder("Search categories and patterns"),
+          attribute.attribute("aria-label", "Search"),
+        ]),
+        html.a([class("button primary"), href("/categories/new")], [
+          text("+ New category"),
+        ]),
+        case missing_defaults {
+          True ->
+            html.form(
+              [
+                attribute.method("post"),
+                attribute.action("/categories/defaults"),
+              ],
+              [html.button([], [text("Add missing defaults")])],
+            )
+          False -> element.none()
+        },
+      ]),
     ]),
-    html.div(
-      [class("grid")],
-      list.map(sections, fn(section) { usage_list(section.0, section.1) }),
-    ),
+    ..list.map(group_names, fn(group) {
+      let entries =
+        dict.get(groups, group)
+        |> result.unwrap([])
+        |> list.sort(fn(a, b) { string.compare({ a.0 }.name, { b.0 }.name) })
+      let total = list.fold(entries, 0, fn(sum, entry) { sum + entry.1 })
+      html.section([class("group")], [
+        html.div([class("group-head")], [
+          html.span([class("sw " <> color_class(order, group))], []),
+          html.b([], [text(group)]),
+          html.span([class("muted")], [
+            text(
+              duration(total) <> " · " <> int.to_string(rules.days) <> " days",
+            ),
+          ]),
+        ]),
+        ..list.map(entries, fn(entry) { category_row(entry.0, entry.1) })
+      ])
+    })
+    |> list.append([
+      html.div([class("grid")], [
+        uncategorized_list(
+          "Without a category · apps and domains",
+          overview.uncategorized_apps,
+          names,
+          overview.rules,
+        ),
+        uncategorized_list(
+          "Without a category · window titles",
+          overview.uncategorized_titles,
+          names,
+          overview.rules,
+        ),
+      ]),
+      html.script(
+        [],
+        "
+const q = document.getElementById('q');
+q.addEventListener('input', () => {
+  const term = q.value.toLowerCase();
+  document.querySelectorAll('[data-q]').forEach(el => el.hidden = term && !el.dataset.q.includes(term));
+  document.querySelectorAll('.group').forEach(g => g.hidden = !g.querySelector('[data-q]:not([hidden])'));
+});",
+      ),
+    ])
   ])
 }
 
-fn rule_form(
-  id: Option(Int),
-  rule: Rule,
-  devices: List(String),
-) -> Element(msg) {
-  let checkbox = fn(name, value, checked, label) {
-    html.label([], [
-      html.input([
-        attribute.type_("checkbox"),
-        attribute.name(name),
-        attribute.value(value),
-        attribute.checked(checked),
-      ]),
-      text(" " <> label),
-    ])
-  }
-  html.form(
-    [class("rule"), attribute.method("post"), attribute.action("/categories")],
+/// A rule in the list: its name indented by depth, a few patterns, devices.
+fn category_row(rule: Rule, ms: Int) -> Element(msg) {
+  let parts = string.split(rule.name, " > ")
+  let depth = list.length(parts) - 1
+  let patterns = categories.split_patterns(rule.regex)
+  let shown = list.take(patterns, 6)
+  let more = list.length(patterns) - list.length(shown)
+  html.a(
     [
-      case id {
-        Some(id) ->
-          html.input([
-            attribute.type_("hidden"),
-            attribute.name("id"),
-            attribute.value(int.to_string(id)),
-          ])
-        None -> element.none()
-      },
-      html.input([
-        attribute.name("name"),
-        attribute.value(rule.name),
-        attribute.placeholder("Work > Programming"),
-        attribute.required(True),
-      ]),
-      html.input([
-        attribute.name("regex"),
-        attribute.value(rule.regex),
-        attribute.placeholder("code|vim|github"),
-        attribute.required(True),
-      ]),
-      html.div([], [
-        html.button([], [
-          text(case id {
-            Some(_) -> "Save"
-            None -> "Add"
-          }),
-        ]),
-        case id {
-          Some(id) ->
-            html.button(
-              [
-                attribute.formaction(
-                  "/categories/" <> int.to_string(id) <> "/delete",
-                ),
-                style("margin-left", "6px"),
-              ],
-              [text("Delete")],
-            )
-          None -> element.none()
+      class("cat"),
+      href("/categories/" <> int.to_string(rule.id)),
+      attribute.data(
+        "q",
+        string.lowercase(rule.name <> " " <> string.join(patterns, " ")),
+      ),
+      style("padding-left", int.to_string(depth * 20) <> "px"),
+    ],
+    [
+      html.div([class("cat-name")], [
+        html.b([], [text(list.last(parts) |> result.unwrap(rule.name))]),
+        case rule.devices {
+          [] -> element.none()
+          devices ->
+            html.span([class("badge")], [
+              text("only " <> string.join(devices, ", ")),
+            ])
         },
       ]),
-      html.div([class("checks")], [
-        checkbox("ignore_case", "on", rule.ignore_case, "ignore case"),
-        ..list.map(devices, fn(device) {
-          checkbox(
-            "devices",
-            device,
-            list.contains(rule.devices, device),
-            device,
-          )
+      html.span([class("t")], [text(duration(ms))]),
+      html.div(
+        [class("chips")],
+        list.map(shown, fn(pattern) {
+          html.span([class("chip"), attribute.title(pattern)], [
+            text(case string.length(pattern) > 28 {
+              True -> string.slice(pattern, 0, 26) <> "…"
+              False -> pattern
+            }),
+          ])
         })
-      ]),
+          |> list.append(case more {
+            0 -> []
+            n -> [
+              html.span([class("chip more")], [text("+" <> int.to_string(n))]),
+            ]
+          }),
+      ),
     ],
   )
+}
+
+/// What has no category, each with a form to add it to one as a pattern.
+fn uncategorized_list(
+  title: String,
+  items: List(Usage),
+  names: List(String),
+  rules: List(#(Rule, Int)),
+) -> Element(msg) {
+  html.section([], [
+    html.h2([], [text(title)]),
+    case items {
+      [] -> html.p([class("muted")], [text("Everything has a category.")])
+      _ -> element.none()
+    },
+    ..list.map(items, fn(item) {
+      html.div([class("row")], [
+        html.b([attribute.title(item.name)], [text(item.name)]),
+        html.span([class("t")], [text(duration(item.ms))]),
+        html.small([], [text(item.detail)]),
+        html.form(
+          [
+            class("assign"),
+            attribute.method("post"),
+            attribute.action("/categories/assign"),
+          ],
+          [
+            html.input([
+              attribute.type_("hidden"),
+              attribute.name("text"),
+              attribute.value(item.name),
+            ]),
+            html.select(
+              [
+                attribute.name("id"),
+                attribute.attribute("aria-label", "Category"),
+              ],
+              list.map(names, fn(name) {
+                // the first rule of a name gets the pattern
+                let id =
+                  list.find(rules, fn(entry) { { entry.0 }.name == name })
+                  |> result.map(fn(entry) { { entry.0 }.id })
+                  |> result.unwrap(0)
+                html.option([attribute.value(int.to_string(id))], name)
+              }),
+            ),
+            html.button([], [text("Add")]),
+            html.a(
+              [
+                class("button"),
+                href(
+                  "/categories/new?pattern="
+                  <> uri.percent_encode(categories.escape(item.name)),
+                ),
+              ],
+              [text("New…")],
+            ),
+          ],
+        ),
+      ])
+    })
+  ])
+}
+
+/// One rule to edit, or a new one, with what it matches in the last days.
+pub fn category_editor(
+  rule: Rule,
+  overview: rules.Overview,
+  error: String,
+  preview: Option(rules.Preview),
+) -> String {
+  let is_new = rule.id == 0
+  let patterns = categories.split_patterns(rule.regex)
+  // every existing name, and each as a parent for a new subcategory
+  let names =
+    list.map(overview.rules, fn(entry) { { entry.0 }.name })
+    |> list.unique
+    |> list.sort(string.compare)
+  document(
+    case is_new {
+      True -> "New category"
+      False -> rule.name
+    },
+    [
+      html.header([], [
+        html.h1([], [
+          text(case is_new {
+            True -> "New category"
+            False -> rule.name
+          }),
+        ]),
+        html.nav([], [html.a([href("/categories")], [text("‹ Categories")])]),
+      ]),
+      html.form(
+        [
+          class("editor"),
+          attribute.method("post"),
+          attribute.action("/categories"),
+        ],
+        [
+          html.section([], [
+            case is_new {
+              True -> element.none()
+              False ->
+                html.input([
+                  attribute.type_("hidden"),
+                  attribute.name("id"),
+                  attribute.value(int.to_string(rule.id)),
+                ])
+            },
+            case error {
+              "" -> element.none()
+              error -> html.p([class("error")], [text(error)])
+            },
+            html.label([attribute.for("name")], [text("Name")]),
+            html.input([
+              attribute.id("name"),
+              attribute.name("name"),
+              attribute.value(rule.name),
+              attribute.placeholder("Work > Programming"),
+              attribute.list("names"),
+              attribute.required(True),
+            ]),
+            html.datalist(
+              [attribute.id("names")],
+              list.flat_map(names, fn(name) {
+                [
+                  html.option([attribute.value(name)], ""),
+                  html.option([attribute.value(name <> " > ")], ""),
+                ]
+              }),
+            ),
+            html.small([class("help")], [
+              text(
+                "Use > for subcategories. The deepest matching category wins.",
+              ),
+            ]),
+            html.label([attribute.for("patterns")], [text("Patterns")]),
+            html.textarea(
+              [
+                attribute.id("patterns"),
+                attribute.name("patterns"),
+                attribute.rows(int.clamp(list.length(patterns) + 2, 6, 24)),
+                attribute.placeholder("code\nvim\ngithub\\.com"),
+                attribute.attribute("spellcheck", "false"),
+              ],
+              string.join(patterns, "\n"),
+            ),
+            html.small([class("help")], [
+              text(
+                "One per line, each matched against the app and the window
+                title. Plain words work, they are regular expressions: \\b marks
+                a word boundary, ^x\\.com$ only matches exactly x.com.",
+              ),
+            ]),
+            html.div([class("checks")], [
+              checkbox("ignore_case", "on", rule.ignore_case, "ignore case"),
+            ]),
+            html.label([], [text("Only on these devices (none: all)")]),
+            html.div(
+              [class("checks")],
+              list.map(overview.devices, fn(device) {
+                checkbox(
+                  "devices",
+                  device,
+                  list.contains(rule.devices, device),
+                  device,
+                )
+              }),
+            ),
+            html.div([class("actions")], [
+              html.button(
+                [
+                  class("primary"),
+                  attribute.name("action"),
+                  attribute.value("save"),
+                ],
+                [text("Save")],
+              ),
+              html.button(
+                [attribute.name("action"), attribute.value("preview")],
+                [
+                  text("Preview matches"),
+                ],
+              ),
+              case is_new {
+                True -> element.none()
+                False ->
+                  html.button(
+                    [
+                      class("danger"),
+                      attribute.formaction(
+                        "/categories/" <> int.to_string(rule.id) <> "/delete",
+                      ),
+                      attribute.attribute(
+                        "onclick",
+                        "return confirm('Delete this category?')",
+                      ),
+                    ],
+                    [text("Delete")],
+                  )
+              },
+            ]),
+          ]),
+        ],
+      ),
+      case preview {
+        None -> element.none()
+        Some(preview) ->
+          html.div([], [
+            html.h2([], [
+              text(
+                "Matches in the last "
+                <> int.to_string(rules.days)
+                <> " days · "
+                <> duration(preview.screen_ms)
+                <> " screen time",
+              ),
+            ]),
+            html.div([class("grid")], [
+              usage_list("Apps and domains", preview.apps),
+              usage_list("Window titles", preview.titles),
+            ]),
+          ])
+      },
+    ],
+  )
+}
+
+fn checkbox(
+  name: String,
+  value: String,
+  checked: Bool,
+  label: String,
+) -> Element(msg) {
+  html.label([], [
+    html.input([
+      attribute.type_("checkbox"),
+      attribute.name(name),
+      attribute.value(value),
+      attribute.checked(checked),
+    ]),
+    text(" " <> label),
+  ])
 }
 
 /// Bars per hour or day. Days link to themselves when `links` is set.

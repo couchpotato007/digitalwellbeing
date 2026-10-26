@@ -470,6 +470,30 @@ pub fn block_titles(
   Usage(row.name, row.detail, row.ms)
 }
 
+/// Screen time per category name since `since_ms`.
+pub fn category_totals(
+  conn: Connection,
+  since_ms: Int,
+) -> Result(List(#(String, Int)), sqlight.Error) {
+  use rows <- result.map(query(conn, sql.category_totals(since_ms:)))
+  list.map(rows, fn(row) { #(row.name, row.ms) })
+}
+
+/// Usage of an app and title on a device, `kind` is "window" or "web".
+pub type Recent {
+  Recent(device: String, kind: String, app: String, title: String, ms: Int)
+}
+
+/// Everything used since `since_ms`, summed per device, kind, app and title.
+pub fn recent_usage(
+  conn: Connection,
+  since_ms: Int,
+) -> Result(List(Recent), sqlight.Error) {
+  use rows <- result.map(query(conn, sql.recent_usage(since_ms:)))
+  use row <- list.map(rows)
+  Recent(row.device, row.kind, row.app, row.title, row.ms)
+}
+
 /// Apps and domains that took the most time without a category.
 pub fn uncategorized_apps(
   conn: Connection,

@@ -60,3 +60,28 @@ pub fn defaults_test() {
   assert category("laptop", "firefox", "A complex football story")
     == "Uncategorized"
 }
+
+pub fn split_patterns_test() {
+  assert categories.split_patterns("a| b |(c|d)|[|]|e\\|f|")
+    == ["a", "b", "(c|d)", "[|]", "e\\|f"]
+  assert categories.split_patterns("") == []
+}
+
+pub fn join_patterns_test() {
+  assert categories.join_patterns(["code", " ", " vim "]) == "code|vim"
+}
+
+pub fn defaults_split_and_join_test() {
+  list.each(categories.defaults, fn(rule) {
+    assert categories.join_patterns(categories.split_patterns(rule.regex))
+      == rule.regex
+  })
+}
+
+pub fn escape_test() {
+  let assert Ok(regex) =
+    categories.compile(categories.escape("x.com (1)"), False)
+  let rule = Rule(1, "Social", "", False, [])
+  assert categories.matches(rule, regex, "laptop", "x.com (1)", "")
+  assert !categories.matches(rule, regex, "laptop", "xycom (1)", "")
+}

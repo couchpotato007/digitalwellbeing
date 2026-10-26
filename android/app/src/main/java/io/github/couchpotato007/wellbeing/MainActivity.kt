@@ -1,12 +1,27 @@
 package io.github.couchpotato007.wellbeing
 
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
 import android.provider.Settings as AndroidSettings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -16,15 +31,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
@@ -35,7 +46,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,14 +53,11 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.format.TextStyle
@@ -68,6 +75,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private enum class Tab(val label: String, val icon: ImageVector) {
+    Overview("Overview", Icons.Filled.Home),
+    Timeline("Timeline", Icons.Filled.DateRange),
+    Settings("Settings", Icons.Filled.Settings),
+}
+
 @Composable
 private fun App() {
     val context = LocalContext.current
@@ -77,6 +90,9 @@ private fun App() {
     var lastSync by remember { mutableStateOf(settings.lastSync) }
     // bumped to reload the chart and status
     var refresh by remember { mutableIntStateOf(0) }
+    var tab by rememberSaveable { mutableStateOf(Tab.Overview) }
+    // the page the timeline opens at
+    var timelinePage by rememberSaveable { mutableIntStateOf(0) }
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         hasAccess = Usage.hasAccess(context)
@@ -84,54 +100,102 @@ private fun App() {
         refresh++
     }
 
-    Column(
-        Modifier
-            .safeDrawingPadding()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Text("Screen time", style = MaterialTheme.typography.headlineMedium)
+    val current = server
+    // with a server, all devices from there, otherwise only this phone
+    val dashboard = current?.let { rememberDashboard(it, refresh) }
 
-        if (!hasAccess) {
-            Card {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("This app needs usage access to see which apps you use.")
-                    Button(onClick = {
-                        context.startActivity(Intent(AndroidSettings.ACTION_USAGE_ACCESS_SETTINGS))
-                    }) { Text("Grant usage access") }
+    Scaffold(
+        bottomBar = {
+            NavigationBar {
+                Tab.entries.forEach {
+                    NavigationBarItem(
+                        selected = tab == it,
+                        onClick = { tab = it },
+                        icon = { Icon(it.icon, contentDescription = null) },
+                        label = { Text(it.label) },
+                    )
                 }
             }
+        },
+    ) { padding ->
+        AnimatedContent(
+            tab,
+            Modifier.padding(padding).consumeWindowInsets(padding),
+            transitionSpec = { fadeIn(tween(200)) togetherWith fadeOut(tween(150)) },
+            label = "tab",
+        ) { shown ->
+            when (shown) {
+                Tab.Overview -> Column(
+                    Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Text("Screen time", style = MaterialTheme.typography.headlineMedium)
+                    if (!hasAccess) {
+                        Card {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("This app needs usage access to see which apps you use.")
+                                Button(onClick = {
+                                    context.startActivity(Intent(AndroidSettings.ACTION_USAGE_ACCESS_SETTINGS))
+                                }) { Text("Grant usage access") }
+                            }
+                        }
+                    }
+                    if (dashboard != null) {
+                        Dashboard(dashboard, onOpenTimeline = { page ->
+                            timelinePage = page
+                            tab = Tab.Timeline
+                        })
+                    } else {
+                        if (hasAccess) UsageCard(refresh)
+                        NoServerCard(onSettings = { tab = Tab.Settings })
+                    }
+                }
+
+                Tab.Timeline -> Column(Modifier.fillMaxSize().padding(top = 16.dp)) {
+                    if (current != null && dashboard != null) {
+                        TimelineScreen(current, dashboard, timelinePage)
+                    } else {
+                        Column(Modifier.padding(16.dp)) { NoServerCard(onSettings = { tab = Tab.Settings }) }
+                    }
+                }
+
+                Tab.Settings -> SettingsScreen(
+                    server = current,
+                    lastSync = lastSync,
+                    hasAccess = hasAccess,
+                    onSave = { new ->
+                        settings.server = new
+                        server = new
+                        Sync.schedule(context)
+                    },
+                    onRemove = {
+                        Sync.cancel(context)
+                        settings.server = null
+                        server = null
+                        lastSync = null
+                    },
+                    onSynced = {
+                        lastSync = settings.lastSync
+                        refresh++
+                    },
+                    // the dashboard shows the new categories
+                    onCategoriesChanged = { refresh++ },
+                )
+            }
         }
+    }
+}
 
-        val current = server
-        // with a server, all devices from there, otherwise only this phone
-        if (current != null) Dashboard(current, refresh)
-        else if (hasAccess) UsageCard(refresh)
-
-        if (current == null) {
-            ServerForm(onSave = { new ->
-                settings.server = new
-                server = new
-                Sync.schedule(context)
-            })
-        } else {
-            ServerCard(
-                server = current,
-                lastSync = lastSync,
-                onSynced = {
-                    lastSync = settings.lastSync
-                    refresh++
-                },
-                onRemove = {
-                    Sync.cancel(context)
-                    settings.server = null
-                    server = null
-                    lastSync = null
-                },
-            )
+@Composable
+private fun NoServerCard(onSettings: () -> Unit) {
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Add your server in the settings to see all your devices and the timeline.")
+            Button(onClick = onSettings) { Text("Open settings") }
         }
-
     }
 }
 
@@ -196,74 +260,6 @@ private fun WeekChart(days: List<Pair<LocalDate, Long>>) {
                     style = MaterialTheme.typography.labelSmall,
                     textAlign = TextAlign.Center,
                 )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ServerForm(onSave: (Server) -> Unit) {
-    var url by remember { mutableStateOf("https://") }
-    var token by remember { mutableStateOf("") }
-    var device by remember { mutableStateOf(Build.MODEL) }
-
-    Card {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Add server", style = MaterialTheme.typography.titleMedium)
-            OutlinedTextField(
-                url, { url = it },
-                label = { Text("Server URL") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                token, { token = it },
-                label = { Text("Token (ADMIN_TOKEN)") },
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                device, { device = it },
-                label = { Text("Device name") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Button(
-                enabled = url.trim().length > "https://".length && token.isNotBlank() && device.isNotBlank(),
-                onClick = { onSave(Server(url.trim(), token.trim(), device.trim())) },
-            ) { Text("Save") }
-        }
-    }
-}
-
-@Composable
-private fun ServerCard(server: Server, lastSync: String?, onSynced: () -> Unit, onRemove: () -> Unit) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var syncing by remember { mutableStateOf(false) }
-
-    Card {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Server", style = MaterialTheme.typography.titleMedium)
-            Text(server.url)
-            Text("as \"${server.device}\", every 15 min", style = MaterialTheme.typography.bodySmall)
-            Text(lastSync ?: "Not synced yet", style = MaterialTheme.typography.bodySmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    enabled = !syncing,
-                    onClick = {
-                        syncing = true
-                        scope.launch {
-                            withContext(Dispatchers.IO) { runCatching { Sync.run(context) } }
-                            syncing = false
-                            onSynced()
-                        }
-                    },
-                ) { Text(if (syncing) "Syncing…" else "Sync now") }
-                OutlinedButton(onClick = onRemove) { Text("Remove") }
             }
         }
     }

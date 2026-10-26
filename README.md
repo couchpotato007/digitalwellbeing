@@ -63,16 +63,22 @@ and forth or jump to a date. It shows:
 - top categories, apps, window titles, browser domains and devices (with
   their operating system, which the agent and the app send along)
 
-Categories are set up on the server under **Categories**. A category is a
-regex matched against the app and window title (for browser tabs: the domain
-and tab title), and every event gets the deepest category that matches, so
+Categories are set up under **Categories** on the server, or under
+Settings in the app. A category has a list of patterns (regexes) matched
+against the app and window title (for browser tabs: the domain and tab
+title), and every event gets the deepest category that matches, so
 `Work > Programming` wins over `Work`. A rule can be limited to some devices.
-Changing a rule re-categorizes everything already stored. The page also lists
-what took the most time without a category, to help write the patterns.
-Categories set up in ActivityWatch itself are not used. A new server starts
-with default categories for common apps and sites (programming, office, chat,
-email, video, music, social media, games, news, shopping). Change or delete
-them as you like; "Add missing default categories" brings back deleted ones.
+Changing a rule re-categorizes everything already stored.
+
+The list groups the categories by their top level, with their time in the
+last 30 days and a search over names and patterns. The editor shows what the
+patterns match in the last 30 days before saving. Below the list is what took
+the most time without a category; each entry can be added to a category as a
+pattern with one click (or tap in the app). Categories set up in ActivityWatch
+itself are not used. A new server starts with default categories for common
+apps and sites (programming, office, chat, email, video, music, social media,
+games, news, shopping). Change or delete them as you like; "Add missing
+defaults" brings back deleted ones.
 
 API (all calls need `Authorization: Bearer <ADMIN_TOKEN>`):
 
@@ -80,6 +86,14 @@ API (all calls need `Authorization: Bearer <ADMIN_TOKEN>`):
   dashboard shows for the 7 days up to that date, as JSON (see
   `server/src/stats.gleam`). Without `date` it is today, without `device` all
   devices.
+- `GET  /api/categories` returns the rules (with their `patterns` and the
+  time of their category in the last 30 days), the devices and what has no
+  category. `POST /api/categories` takes `{"id"?, "name", "patterns": […],
+  "ignore_case", "devices": […]}` and adds or changes a rule, `DELETE
+  /api/categories/{id}` deletes one. `POST /api/categories/preview` takes the
+  same body and returns what it would match. `POST /api/categories/assign`
+  takes `{"id", "text"}` and adds the text as an exact pattern. Invalid rules
+  get a 422 with `{"error"}`.
 - `GET  /api/block?device=laptop&category=Work&since_ms=…&until_ms=…` returns
   the `apps` and window `titles` of that category in that time, cut to it
   (what a block of the activity view was made of). Without `device` it is all
@@ -163,9 +177,15 @@ gradle wrapper   # once, creates ./gradlew
 ```
 
 In the app, grant usage access, then add the server URL, `ADMIN_TOKEN` and a
-device name. With a server, the app shows the server's dashboard for all your
-devices, with the same device, day and range selection. A tap on the activity
-view opens it full screen: a page per device (or day) to swipe between, the
-day from top to bottom, pinch to zoom, tap a block for the apps and window titles in it. Without one it shows
-this phone's last 7 days. Android keeps usage events only for about a week, so the first sync
-uploads less than 30 days.
+device name under **Settings**, where **Test connection** checks them before
+saving. The app has three tabs:
+
+- **Overview**: the server's dashboard for all your devices, with the same
+  device, day and range selection.
+- **Timeline**: the activity view, a page per device (or day) to swipe
+  between, the day from top to bottom. Pinch to zoom, tap a block to open a
+  page with its apps and window titles.
+- **Settings**: the server, syncing, usage access.
+
+Without a server, Overview shows this phone's last 7 days. Android keeps usage
+events only for about a week, so the first sync uploads less than 30 days.
