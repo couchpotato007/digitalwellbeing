@@ -15,15 +15,29 @@ android {
         // ACTIVITY_RESUMED/PAUSED usage events and AppOpsManager.unsafeCheckOpNoThrow
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        // CI sets these from the tag, see .github/workflows/android.yml
+        versionCode = (findProperty("versionCode") as String?)?.toInt() ?: 1
+        versionName = findProperty("versionName") as String? ?: "1.0"
+    }
+
+    // CI signs with a fixed key so updates install over each other, local
+    // builds fall back to the debug key
+    val keystore = System.getenv("KEYSTORE_FILE")
+    signingConfigs {
+        if (keystore != null) {
+            create("release") {
+                storeFile = file(keystore)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // sideloaded, so the debug key is good enough
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (keystore != null) "release" else "debug")
         }
     }
 
