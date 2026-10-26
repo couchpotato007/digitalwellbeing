@@ -1,7 +1,11 @@
 name: Android app
 
-# Builds the APK on every change to android/. A v1.2.3 tag also publishes it
-# as wellbeing-1.2.3.apk in the GitHub release v1.2.3, where Obtainium finds it.
+# Builds the APK on every change to android/ and publishes it where Obtainium
+# finds it:
+# - a v1.2.3 tag as wellbeing-1.2.3.apk in the release v1.2.3
+# - a push to main as a prerelease nightly-<run number>, the last
+#   $NIGHTLIES of them are kept
+# Pull requests only build.
 #
 # The APK is signed with the key in these secrets, the same key every time so
 # updates install over the previous version:
@@ -21,6 +25,9 @@ on:
 permissions:
   contents: write
 
+env:
+  NIGHTLIES: 5
+
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -38,6 +45,9 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             echo "name=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
+            echo "name=nightly-$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "nightly=true" >> "$GITHUB_OUTPUT"
           else
             echo "name=0.0.0-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
@@ -48,7 +58,7 @@ jobs:
           if [ -n "$KEYSTORE" ]; then
             echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.jks"
             echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          elif [[ "$GITHUB_REF" == refs/tags/v* || "$GITHUB_REF" == refs/heads/main ]]; then
             echo "::error::ANDROID_KEYSTORE is not set, a release needs the fixed key"
             exit 1
           fi
@@ -72,3 +82,14 @@ jobs:
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
           gh release upload "$GITHUB_REF_NAME" wellbeing-*.apk --clobber
+      # tags made with the workflow's token start no other workflows
+      - if: steps.version.outputs.nightly == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.name }}
+        run: |
+          gh release create "$TAG" wellbeing-*.apk --prerelease --target "$GITHUB_SHA" \
+            --title "Nightly $GITHUB_RUN_NUMBER" --notes "Built from $GITHUB_SHA"
+          gh release list --limit 100 --json tagName --jq '.[].tagName' \
+            | grep '^nightly-' | sort -t- -k2 -rn | tail -n +$((NIGHTLIES + 1)) \
+            | xargs -r -n1 gh release delete --yes --cleanup-tag

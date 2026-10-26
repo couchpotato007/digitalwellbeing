@@ -16,6 +16,7 @@ import gleam/string
 import gleam/uri
 import shared
 import sqlight
+import stats
 import wisp
 
 pub type Context {
@@ -35,6 +36,7 @@ pub fn handle_request(req: wisp.Request, ctx: Context) -> wisp.Response {
     http.Post, ["categories", id, "delete"] -> delete_category(req, ctx, id)
     http.Post, ["devices", device, "delete"] ->
       delete_device(req, ctx, decode_segment(device))
+    http.Get, ["api", "stats"] -> stats_json(req, ctx)
     http.Get, ["api", "devices", device, "cursor"] ->
       cursor(ctx, decode_segment(device))
     http.Post, ["api", "devices", device, "events"] ->
@@ -109,36 +111,36 @@ fn ingest(req: wisp.Request, ctx: Context, device: String) -> wisp.Response {
   }
 }
 
-fn dashboard(req: wisp.Request, ctx: Context) -> wisp.Response {
+/// The report for the query `?date=2026-10-26&days=7&device=laptop`: the 7
+/// days up to that date of that device. Without them it is today on all
+/// devices.
+fn report(
+  req: wisp.Request,
+  ctx: Context,
+) -> Result(stats.Report, sqlight.Error) {
   let query = wisp.get_query(req)
   let days =
     list.key_find(query, "days")
     |> result.try(int.parse)
     |> result.unwrap(1)
-    |> int.clamp(1, 365)
+    |> int.clamp(1, 366)
+  let date = list.key_find(query, "date") |> result.unwrap("")
   let device = list.key_find(query, "device") |> result.unwrap("")
-  let data = {
-    use filter <- result.try(db.filter(ctx.db, days, device))
-    use devices <- result.try(db.devices(ctx.db, filter))
-    use timeline <- result.try(db.timeline(ctx.db, filter))
-    use categories <- result.try(db.categories(ctx.db, filter))
-    use apps <- result.try(db.apps(ctx.db, filter))
-    use titles <- result.try(db.titles(ctx.db, filter))
-    use domains <- result.map(db.domains(ctx.db, filter))
-    let sections = [
-      #("Categories", categories),
-      #("Apps", apps),
-      #("Window titles", titles),
-      #("Browser domains", domains),
-    ]
-    let sections = case filter.device {
-      "" -> [#("Devices · last active", devices), ..sections]
-      _ -> sections
-    }
-    dashboard.page(filter, devices, timeline, sections)
+  use filter <- result.try(db.filter(ctx.db, date, days, device))
+  stats.load(ctx.db, filter)
+}
+
+fn dashboard(req: wisp.Request, ctx: Context) -> wisp.Response {
+  case report(req, ctx) {
+    Ok(report) -> wisp.html_response(dashboard.page(report), 200)
+    Error(err) -> db_error(err)
   }
-  case data {
-    Ok(html) -> wisp.html_response(html, 200)
+}
+
+fn stats_json(req: wisp.Request, ctx: Context) -> wisp.Response {
+  case report(req, ctx) {
+    Ok(report) ->
+      stats.to_json(report) |> json.to_string |> wisp.json_response(200)
     Error(err) -> db_error(err)
   }
 }
@@ -148,7 +150,7 @@ fn categories_page(req: wisp.Request, ctx: Context) -> wisp.Response {
   let page = {
     use rules <- result.try(db.rules(ctx.db))
     use devices <- result.try(db.device_names(ctx.db))
-    use last_30_days <- result.try(db.filter(ctx.db, 30, ""))
+    use last_30_days <- result.try(db.filter(ctx.db, "", 30, ""))
     use apps <- result.try(db.uncategorized_apps(ctx.db, last_30_days))
     use titles <- result.map(db.uncategorized_titles(ctx.db, last_30_days))
     dashboard.categories_page(rules, devices, error, [

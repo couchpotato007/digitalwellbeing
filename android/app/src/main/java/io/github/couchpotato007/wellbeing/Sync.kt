@@ -87,7 +87,7 @@ object Sync {
         WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
     }
 
-    private fun request(method: String, url: String, token: String, body: String?): String {
+    fun request(method: String, url: String, token: String, body: String?): String {
         val conn = URL(url).openConnection() as HttpURLConnection
         try {
             conn.requestMethod = method

@@ -102,11 +102,13 @@ private fun App() {
                     }) { Text("Grant usage access") }
                 }
             }
-        } else {
-            UsageCard(refresh)
         }
 
         val current = server
+        // with a server, all devices from there, otherwise only this phone
+        if (current != null) Dashboard(current, refresh)
+        else if (hasAccess) UsageCard(refresh)
+
         if (current == null) {
             ServerForm(onSave = { new ->
                 settings.server = new
@@ -267,7 +269,7 @@ private fun ServerCard(server: Server, lastSync: String?, onSynced: () -> Unit, 
     }
 }
 
-private fun formatDuration(ms: Long): String {
+fun formatDuration(ms: Long): String {
     val minutes = ms / 60_000
     return if (minutes < 60) "${minutes}m" else "${minutes / 60}h ${minutes % 60}m"
 }

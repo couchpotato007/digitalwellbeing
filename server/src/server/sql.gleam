@@ -58,90 +58,165 @@ WHERE id = ?1"
   #(sql, [dev.ParamInt(id)])
 }
 
-pub type Since {
-  Since(since_ms: Int)
+pub type Range {
+  Range(
+    date: String,
+    first_date: String,
+    since_ms: Int,
+    until_ms: Int,
+    previous_since_ms: Int,
+    previous_date: String,
+    next_date: String,
+    today: String,
+  )
 }
 
-pub fn since(days days: Int) {
+pub fn range(date date: String, days days: Int) {
   let sql =
     "
-SELECT CAST(unixepoch('now', 'localtime', 'start of day', printf('-%d days', CAST(?1 AS INTEGER) - 1), 'utc') * 1000 AS INTEGER) AS since_ms"
-  #(sql, [dev.ParamInt(days)], since_decoder())
+SELECT
+  CAST(date AS TEXT) AS date,
+  CAST(date(date, printf('-%d days', n - 1)) AS TEXT) AS first_date,
+  CAST(unixepoch(date, printf('-%d days', n - 1), 'utc') * 1000 AS INTEGER) AS since_ms,
+  CAST(unixepoch(date, '+1 day', 'utc') * 1000 AS INTEGER) AS until_ms,
+  CAST(unixepoch(date, printf('-%d days', 2 * n - 1), 'utc') * 1000 AS INTEGER) AS previous_since_ms,
+  CAST(date(date, printf('-%d days', n)) AS TEXT) AS previous_date,
+  CAST(date(date, printf('+%d days', n)) AS TEXT) AS next_date,
+  CAST(date('now', 'localtime') AS TEXT) AS today
+FROM (
+  SELECT coalesce(date(CAST(?1 AS TEXT)), date('now', 'localtime')) AS date,
+    CAST(?2 AS INTEGER) AS n
+)"
+  #(sql, [dev.ParamString(date), dev.ParamInt(days)], range_decoder())
 }
 
-pub fn since_decoder() -> decode.Decoder(Since) {
-  use since_ms <- decode.field(0, decode.int)
-  decode.success(Since(since_ms:))
+pub fn range_decoder() -> decode.Decoder(Range) {
+  use date <- decode.field(0, decode.string)
+  use first_date <- decode.field(1, decode.string)
+  use since_ms <- decode.field(2, decode.int)
+  use until_ms <- decode.field(3, decode.int)
+  use previous_since_ms <- decode.field(4, decode.int)
+  use previous_date <- decode.field(5, decode.string)
+  use next_date <- decode.field(6, decode.string)
+  use today <- decode.field(7, decode.string)
+  decode.success(Range(
+    date:,
+    first_date:,
+    since_ms:,
+    until_ms:,
+    previous_since_ms:,
+    previous_date:,
+    next_date:,
+    today:,
+  ))
 }
 
 pub type Days {
-  Days(date: String)
+  Days(date: String, weekday: Int, start_ms: Int, end_ms: Int)
 }
 
-pub fn days(days days: Int) {
+pub fn days(first_date first_date: String, last_date last_date: String) {
   let sql =
     "WITH RECURSIVE day(date) AS (
-  SELECT date('now', 'localtime', printf('-%d days', CAST(?1 AS INTEGER) - 1))
+  SELECT date(CAST(?1 AS TEXT))
   UNION ALL
-  SELECT date(date, '+1 day') FROM day WHERE date < date('now', 'localtime')
+  SELECT date(date, '+1 day') FROM day WHERE date < CAST(?2 AS TEXT)
 )
-SELECT CAST(date AS TEXT) AS date FROM day"
-  #(sql, [dev.ParamInt(days)], days_decoder())
+SELECT CAST(date AS TEXT) AS date,
+  CAST(strftime('%w', date) AS INTEGER) AS weekday,
+  CAST(unixepoch(date, 'utc') * 1000 AS INTEGER) AS start_ms,
+  CAST(unixepoch(date, '+1 day', 'utc') * 1000 AS INTEGER) AS end_ms
+FROM day"
+  #(
+    sql,
+    [dev.ParamString(first_date), dev.ParamString(last_date)],
+    days_decoder(),
+  )
 }
 
 pub fn days_decoder() -> decode.Decoder(Days) {
   use date <- decode.field(0, decode.string)
-  decode.success(Days(date:))
+  use weekday <- decode.field(1, decode.int)
+  use start_ms <- decode.field(2, decode.int)
+  use end_ms <- decode.field(3, decode.int)
+  decode.success(Days(date:, weekday:, start_ms:, end_ms:))
 }
 
 pub type ScreenTime {
-  ScreenTime(bucket: String, start_ms: Int, end_ms: Int)
+  ScreenTime(
+    device: String,
+    category: String,
+    date: String,
+    hour: String,
+    start_time: String,
+    end_time: String,
+    start_ms: Int,
+    end_ms: Int,
+  )
 }
 
 pub fn screen_time(
-  days days: Int,
   since_ms since_ms: Int,
+  until_ms until_ms: Int,
   device device: String,
 ) {
   let sql =
-    "SELECT
-  CAST(CASE WHEN CAST(?1 AS INTEGER) = 1
-    THEN strftime('%H', start_ms / 1000, 'unixepoch', 'localtime')
-    ELSE date(start_ms / 1000, 'unixepoch', 'localtime')
-  END AS TEXT) AS bucket,
+    "SELECT device, category,
+  CAST(date(start_ms / 1000, 'unixepoch', 'localtime') AS TEXT) AS date,
+  CAST(strftime('%H', start_ms / 1000, 'unixepoch', 'localtime') AS TEXT) AS hour,
+  CAST(strftime('%H:%M', start_ms / 1000, 'unixepoch', 'localtime') AS TEXT) AS start_time,
+  CAST(strftime('%H:%M', (start_ms + duration_ms) / 1000, 'unixepoch', 'localtime') AS TEXT) AS end_time,
   start_ms,
   CAST(start_ms + duration_ms AS INTEGER) AS end_ms
 FROM events
-WHERE kind = 'window' AND start_ms >= ?2
+WHERE kind = 'window' AND start_ms >= ?1 AND start_ms < ?2
   AND (CAST(?3 AS TEXT) = '' OR device = ?3)
 ORDER BY start_ms"
   #(
     sql,
-    [dev.ParamInt(days), dev.ParamInt(since_ms), dev.ParamString(device)],
+    [dev.ParamInt(since_ms), dev.ParamInt(until_ms), dev.ParamString(device)],
     screen_time_decoder(),
   )
 }
 
 pub fn screen_time_decoder() -> decode.Decoder(ScreenTime) {
-  use bucket <- decode.field(0, decode.string)
-  use start_ms <- decode.field(1, decode.int)
-  use end_ms <- decode.field(2, decode.int)
-  decode.success(ScreenTime(bucket:, start_ms:, end_ms:))
+  use device <- decode.field(0, decode.string)
+  use category <- decode.field(1, decode.string)
+  use date <- decode.field(2, decode.string)
+  use hour <- decode.field(3, decode.string)
+  use start_time <- decode.field(4, decode.string)
+  use end_time <- decode.field(5, decode.string)
+  use start_ms <- decode.field(6, decode.int)
+  use end_ms <- decode.field(7, decode.int)
+  decode.success(ScreenTime(
+    device:,
+    category:,
+    date:,
+    hour:,
+    start_time:,
+    end_time:,
+    start_ms:,
+    end_ms:,
+  ))
 }
 
 pub type TopDevices {
   TopDevices(name: String, detail: String, ms: Int)
 }
 
-pub fn top_devices(since_ms since_ms: Int) {
+pub fn top_devices(since_ms since_ms: Int, until_ms until_ms: Int) {
   let sql =
     "SELECT device AS name,
   CAST(datetime(max(start_ms + duration_ms) / 1000, 'unixepoch', 'localtime') AS TEXT) AS detail,
   CAST(sum(duration_ms) AS INTEGER) AS ms
 FROM events
-WHERE kind = 'window' AND start_ms >= ?1
+WHERE kind = 'window' AND start_ms >= ?1 AND start_ms < ?2
 GROUP BY device ORDER BY ms DESC LIMIT 15"
-  #(sql, [dev.ParamInt(since_ms)], top_devices_decoder())
+  #(
+    sql,
+    [dev.ParamInt(since_ms), dev.ParamInt(until_ms)],
+    top_devices_decoder(),
+  )
 }
 
 pub fn top_devices_decoder() -> decode.Decoder(TopDevices) {
@@ -155,16 +230,20 @@ pub type TopCategories {
   TopCategories(name: String, ms: Int)
 }
 
-pub fn top_categories(since_ms since_ms: Int, device device: String) {
+pub fn top_categories(
+  since_ms since_ms: Int,
+  until_ms until_ms: Int,
+  device device: String,
+) {
   let sql =
     "SELECT category AS name, CAST(sum(duration_ms) AS INTEGER) AS ms
 FROM events
-WHERE kind = 'window' AND start_ms >= ?1
-  AND (CAST(?2 AS TEXT) = '' OR device = ?2)
+WHERE kind = 'window' AND start_ms >= ?1 AND start_ms < ?2
+  AND (CAST(?3 AS TEXT) = '' OR device = ?3)
 GROUP BY category ORDER BY ms DESC LIMIT 15"
   #(
     sql,
-    [dev.ParamInt(since_ms), dev.ParamString(device)],
+    [dev.ParamInt(since_ms), dev.ParamInt(until_ms), dev.ParamString(device)],
     top_categories_decoder(),
   )
 }
@@ -182,6 +261,7 @@ pub type TopApps {
 pub fn top_apps(
   kind kind: String,
   since_ms since_ms: Int,
+  until_ms until_ms: Int,
   device device: String,
 ) {
   let sql =
@@ -189,12 +269,17 @@ pub fn top_apps(
   CAST(group_concat(DISTINCT device) AS TEXT) AS detail,
   CAST(sum(duration_ms) AS INTEGER) AS ms
 FROM events
-WHERE kind = ?1 AND start_ms >= ?2
-  AND (CAST(?3 AS TEXT) = '' OR device = ?3)
+WHERE kind = ?1 AND start_ms >= ?2 AND start_ms < ?3
+  AND (CAST(?4 AS TEXT) = '' OR device = ?4)
 GROUP BY app ORDER BY ms DESC LIMIT 15"
   #(
     sql,
-    [dev.ParamString(kind), dev.ParamInt(since_ms), dev.ParamString(device)],
+    [
+      dev.ParamString(kind),
+      dev.ParamInt(since_ms),
+      dev.ParamInt(until_ms),
+      dev.ParamString(device),
+    ],
     top_apps_decoder(),
   )
 }
@@ -210,16 +295,20 @@ pub type TopTitles {
   TopTitles(name: String, detail: String, ms: Int)
 }
 
-pub fn top_titles(since_ms since_ms: Int, device device: String) {
+pub fn top_titles(
+  since_ms since_ms: Int,
+  until_ms until_ms: Int,
+  device device: String,
+) {
   let sql =
     "SELECT title AS name, app AS detail, CAST(sum(duration_ms) AS INTEGER) AS ms
 FROM events
-WHERE kind = 'window' AND start_ms >= ?1
-  AND (CAST(?2 AS TEXT) = '' OR device = ?2)
+WHERE kind = 'window' AND start_ms >= ?1 AND start_ms < ?2
+  AND (CAST(?3 AS TEXT) = '' OR device = ?3)
 GROUP BY title ORDER BY ms DESC LIMIT 15"
   #(
     sql,
-    [dev.ParamInt(since_ms), dev.ParamString(device)],
+    [dev.ParamInt(since_ms), dev.ParamInt(until_ms), dev.ParamString(device)],
     top_titles_decoder(),
   )
 }

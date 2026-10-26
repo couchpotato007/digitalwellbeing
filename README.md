@@ -48,10 +48,19 @@ Open `http://<server>:8080/` and log in with any user name and `ADMIN_TOKEN` as 
 password. Days are counted in the server's local time zone, so set `TZ` if the
 server runs elsewhere.
 
-The dashboard looks like ActivityWatch's Activity view, but covers all devices:
-total screen time (time on several devices at once counts once), a per-hour or
-per-day timeline, top categories, apps, window titles and browser domains.
-Filter by device at the top.
+The dashboard looks like ActivityWatch's Activity view, but covers all devices.
+At the top you pick a device (or all), a day, a week or 30 days, and step back
+and forth or jump to a date. It shows:
+
+- total screen time (time on several devices at once counts once), the change
+  against the period before, the daily average, the number of sessions
+  (screen time without a break of 5 minutes), the longest one, and when you
+  were first and last active (or the busiest day)
+- screen time per hour, or per day (a click on a day opens it)
+- an activity view of when which category was used, one row per device for a
+  day, one row per day for a week or month
+- for weeks and months: the average day per hour
+- top categories, apps, window titles, browser domains and devices
 
 Categories are set up on the server under **Categories**. A category is a
 regex matched against the app and window title (for browser tabs: the domain
@@ -66,6 +75,10 @@ them as you like; "Add missing default categories" brings back deleted ones.
 
 API (all calls need `Authorization: Bearer <ADMIN_TOKEN>`):
 
+- `GET  /api/stats?date=2026-10-26&days=7&device=laptop` returns everything the
+  dashboard shows for the 7 days up to that date, as JSON (see
+  `server/src/stats.gleam`). Without `date` it is today, without `device` all
+  devices.
 - `GET  /api/devices/{device}/cursor` returns `{"cursor_ms": <end of newest event>}`
 - `POST /api/devices/{device}/events` takes `{"from_ms", "events": [{"kind", "start_ms",
   "duration_ms", "app", "title"}]}` and replaces everything the device did
@@ -144,5 +157,7 @@ gradle wrapper   # once, creates ./gradlew
 ```
 
 In the app, grant usage access, then add the server URL, `ADMIN_TOKEN` and a
-device name. Android keeps usage events only for about a week, so the first sync
+device name. With a server, the app shows the server's dashboard for all your
+devices, with the same device, day and range selection. Without one it shows
+this phone's last 7 days. Android keeps usage events only for about a week, so the first sync
 uploads less than 30 days.

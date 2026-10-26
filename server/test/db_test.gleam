@@ -4,6 +4,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import shared.{Event}
 import sqlight
+import stats
 
 fn with_db(run: fn(sqlight.Connection) -> a) -> a {
   use conn <- sqlight.with_connection(":memory:")
@@ -24,7 +25,7 @@ fn upload(conn, device, events) {
 }
 
 fn category_of(conn, app) {
-  let assert Ok(filter) = db.filter(conn, 365, "")
+  let assert Ok(filter) = db.filter(conn, "", 365, "")
   let assert Ok(apps) = db.apps(conn, filter)
   let assert Ok(categories) = db.categories(conn, filter)
   let assert Ok(_) = list.find(apps, fn(usage) { usage.name == app })
@@ -32,7 +33,7 @@ fn category_of(conn, app) {
 }
 
 fn now_ms() {
-  let assert Ok(filter) = with_db(db.filter(_, 1, ""))
+  let assert Ok(filter) = with_db(db.filter(_, "", 1, ""))
   // start of today, plus an hour
   filter.since_ms + 3_600_000
 }
@@ -105,16 +106,39 @@ pub fn dashboard_queries_test() {
     Event(shared.Window, start + 30_000, 60_000, "Code", "b"),
     Event(shared.Web, start + 30_000, 60_000, "example.org", "c"),
   ])
-  let assert Ok(today) = db.filter(conn, 1, "")
-  let assert Ok(timeline) = db.timeline(conn, today)
-  assert list.length(timeline) == 24
+  let assert Ok(today) = db.filter(conn, "", 1, "")
+  let assert Ok(report) = stats.load(conn, today)
+  assert list.length(report.timeline) == 24
   // both devices at once count once
-  assert list.fold(timeline, 0, fn(sum, hour) { sum + hour.ms }) == 90_000
+  assert report.total_ms == 90_000
+  assert list.fold(report.timeline, 0, fn(sum, hour) { sum + hour.ms })
+    == 90_000
+  assert report.sessions == 1
+  assert report.longest_session_ms == 90_000
+  assert report.first_active == "01:00"
+  assert report.previous_ms == 0
+  // one strip per device
+  let assert [desktop, laptop] = report.strips
+  assert desktop.label == "desktop" && laptop.label == "laptop"
+  let assert [stats.Segment(_, _, "Work > Programming")] = laptop.segments
 
-  let assert Ok(week) = db.filter(conn, 7, "laptop")
-  let assert Ok(days) = db.timeline(conn, week)
-  assert list.length(days) == 7
-  assert list.fold(days, 0, fn(sum, day) { sum + day.ms }) == 60_000
+  let assert Ok(week) = db.filter(conn, today.date, 7, "laptop")
+  let assert Ok(report) = stats.load(conn, week)
+  assert list.length(report.timeline) == 7
+  assert report.total_ms == 60_000
+  // one strip per day
+  assert list.length(report.strips) == 7
+
+  // the day before has nothing, the week before neither
+  let assert Ok(yesterday) = db.filter(conn, today.previous_date, 1, "")
+  let assert Ok(report) = stats.load(conn, yesterday)
+  assert report.total_ms == 0
+  assert yesterday.next_date == today.date
+
+  // tomorrow compares with today
+  let assert Ok(tomorrow) = db.filter(conn, today.next_date, 1, "")
+  let assert Ok(report) = stats.load(conn, tomorrow)
+  assert report.previous_ms == 90_000
 
   let assert Ok([code]) = db.apps(conn, today)
   assert code.detail == "desktop, laptop" || code.detail == "laptop, desktop"
@@ -124,4 +148,15 @@ pub fn dashboard_queries_test() {
   let assert Ok([_]) = db.uncategorized_apps(conn, today)
   let assert Ok([]) = db.uncategorized_titles(conn, today)
   let assert Ok(["desktop", "laptop"]) = db.device_names(conn)
+}
+
+pub fn invalid_date_is_today_test() {
+  use conn <- with_db
+  let assert Ok(today) = db.filter(conn, "", 1, "")
+  let assert Ok(invalid) = db.filter(conn, "yesterday", 1, "")
+  assert invalid.date == today.date
+  let assert Ok(week) = db.filter(conn, "2026-03-31", 7, "")
+  assert week.first_date == "2026-03-25"
+  assert week.previous_date == "2026-03-24"
+  assert week.next_date == "2026-04-07"
 }

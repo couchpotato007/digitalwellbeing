@@ -2,9 +2,7 @@
 //// (see README.md). This module runs them with sqlight.
 
 import categories.{type Rule, Rule}
-import gleam/dict
 import gleam/dynamic/decode
-import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option}
@@ -223,74 +221,119 @@ pub fn device_names(conn: Connection) -> Result(List(String), sqlight.Error) {
   |> result.map(list.map(_, fn(row) { row.device }))
 }
 
-/// What the dashboard shows: the last `days` days (1 is today) of one
-/// device, or of all devices if `device` is "". They start at `since_ms`.
+/// What the dashboard shows: the `days` days up to and including `date`
+/// (local dates like "2026-10-26") of one device, or of all devices if
+/// `device` is "". They are the time from `since_ms` to `until_ms`. The
+/// period of the same length before starts at `previous_since_ms` and ends on
+/// `previous_date`, the one after ends on `next_date`.
 pub type Filter {
-  Filter(days: Int, device: String, since_ms: Int)
+  Filter(
+    date: String,
+    first_date: String,
+    days: Int,
+    device: String,
+    since_ms: Int,
+    until_ms: Int,
+    previous_since_ms: Int,
+    previous_date: String,
+    next_date: String,
+    today: String,
+  )
 }
 
+/// An invalid `date`, like "", is today.
 pub fn filter(
   conn: Connection,
+  date: String,
   days: Int,
   device: String,
 ) -> Result(Filter, sqlight.Error) {
-  use row <- result.map(query_one(conn, sql.since(days:)))
-  Filter(days:, device:, since_ms: row.since_ms)
+  use row <- result.map(query_one(conn, sql.range(date:, days:)))
+  Filter(
+    date: row.date,
+    first_date: row.first_date,
+    days:,
+    device:,
+    since_ms: row.since_ms,
+    until_ms: row.until_ms,
+    previous_since_ms: row.previous_since_ms,
+    previous_date: row.previous_date,
+    next_date: row.next_date,
+    today: row.today,
+  )
+}
+
+/// The same filter for the period before.
+pub fn previous(filter: Filter) -> Filter {
+  Filter(
+    ..filter,
+    since_ms: filter.previous_since_ms,
+    until_ms: filter.since_ms,
+    date: filter.previous_date,
+  )
+}
+
+/// A local day, `weekday` is 0 for Sunday to 6 for Saturday.
+pub type Day {
+  Day(date: String, weekday: Int, start_ms: Int, end_ms: Int)
+}
+
+/// The days of the filter, oldest first.
+pub fn days(
+  conn: Connection,
+  filter: Filter,
+) -> Result(List(Day), sqlight.Error) {
+  use rows <- result.map(query(
+    conn,
+    sql.days(first_date: filter.first_date, last_date: filter.date),
+  ))
+  use row <- list.map(rows)
+  Day(row.date, row.weekday, row.start_ms, row.end_ms)
+}
+
+/// A stretch of screen time, with the local date, hour ("07") and times
+/// ("07:45") it started and ended.
+pub type Stretch {
+  Stretch(
+    device: String,
+    category: String,
+    date: String,
+    hour: String,
+    start_time: String,
+    end_time: String,
+    start_ms: Int,
+    end_ms: Int,
+  )
+}
+
+/// All screen time of the filter, sorted by start.
+pub fn screen_time(
+  conn: Connection,
+  filter: Filter,
+) -> Result(List(Stretch), sqlight.Error) {
+  use rows <- result.map(query(
+    conn,
+    sql.screen_time(
+      since_ms: filter.since_ms,
+      until_ms: filter.until_ms,
+      device: filter.device,
+    ),
+  ))
+  use row <- list.map(rows)
+  Stretch(
+    device: row.device,
+    category: row.category,
+    date: row.date,
+    hour: row.hour,
+    start_time: row.start_time,
+    end_time: row.end_time,
+    start_ms: row.start_ms,
+    end_ms: row.end_ms,
+  )
 }
 
 pub type Usage {
   Usage(name: String, detail: String, ms: Int)
-}
-
-/// Screen time per hour for today, otherwise per day. Time spent on several
-/// devices at once is counted only once.
-pub fn timeline(
-  conn: Connection,
-  filter: Filter,
-) -> Result(List(Usage), sqlight.Error) {
-  use labels <- result.try(case filter.days {
-    1 ->
-      Ok(
-        int.range(from: 0, to: 24, with: [], run: list.prepend)
-        |> list.reverse
-        |> list.map(fn(hour) { int.to_string(hour) |> string.pad_start(2, "0") }),
-      )
-    days ->
-      query(conn, sql.days(days:))
-      |> result.map(list.map(_, fn(row) { row.date }))
-  })
-  use rows <- result.map(query(
-    conn,
-    sql.screen_time(
-      days: filter.days,
-      since_ms: filter.since_ms,
-      device: filter.device,
-    ),
-  ))
-  let totals =
-    list.group(rows, fn(row) { row.bucket })
-    |> dict.map_values(fn(_, rows) {
-      list.reverse(rows)
-      |> list.map(fn(row) { #(row.start_ms, row.end_ms) })
-      |> union_ms
-    })
-  list.map(labels, fn(label) {
-    Usage(label, "", dict.get(totals, label) |> result.unwrap(0))
-  })
-}
-
-/// Length of the union of intervals sorted by start.
-fn union_ms(intervals: List(#(Int, Int))) -> Int {
-  let #(total, _) =
-    list.fold(intervals, #(0, 0), fn(acc, interval) {
-      let #(total, reach) = acc
-      let start = int.max(interval.0, reach)
-      case interval.1 > start {
-        True -> #(total + interval.1 - start, interval.1)
-        False -> acc
-      }
-    })
-  total
 }
 
 /// "laptop,phone" -> "laptop, phone"
@@ -303,7 +346,10 @@ pub fn devices(
   conn: Connection,
   filter: Filter,
 ) -> Result(List(Usage), sqlight.Error) {
-  use rows <- result.map(query(conn, sql.top_devices(since_ms: filter.since_ms)))
+  use rows <- result.map(query(
+    conn,
+    sql.top_devices(since_ms: filter.since_ms, until_ms: filter.until_ms),
+  ))
   use row <- list.map(rows)
   Usage(row.name, row.detail, row.ms)
 }
@@ -314,7 +360,11 @@ pub fn categories(
 ) -> Result(List(Usage), sqlight.Error) {
   use rows <- result.map(query(
     conn,
-    sql.top_categories(since_ms: filter.since_ms, device: filter.device),
+    sql.top_categories(
+      since_ms: filter.since_ms,
+      until_ms: filter.until_ms,
+      device: filter.device,
+    ),
   ))
   use row <- list.map(rows)
   Usage(row.name, "", row.ms)
@@ -335,7 +385,12 @@ fn top_apps(
 ) -> Result(List(Usage), sqlight.Error) {
   use rows <- result.map(query(
     conn,
-    sql.top_apps(kind:, since_ms: filter.since_ms, device: filter.device),
+    sql.top_apps(
+      kind:,
+      since_ms: filter.since_ms,
+      until_ms: filter.until_ms,
+      device: filter.device,
+    ),
   ))
   use row <- list.map(rows)
   Usage(row.name, device_list(row.detail), row.ms)
@@ -347,7 +402,11 @@ pub fn titles(
 ) -> Result(List(Usage), sqlight.Error) {
   use rows <- result.map(query(
     conn,
-    sql.top_titles(since_ms: filter.since_ms, device: filter.device),
+    sql.top_titles(
+      since_ms: filter.since_ms,
+      until_ms: filter.until_ms,
+      device: filter.device,
+    ),
   ))
   use row <- list.map(rows)
   Usage(row.name, row.detail, row.ms)
