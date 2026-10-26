@@ -1,7 +1,9 @@
+import categories.{type Rule, Rule}
 import db.{type Filter, type Usage}
 import gleam/float
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import gleam/uri
 import lustre/attribute.{class, href, style}
@@ -36,6 +38,15 @@ section { background: var(--card); border: 1px solid var(--line); border-radius:
 .row .t { text-align: right; } .row small { color: var(--muted); grid-column: 1 / -1; }
 .meter { grid-column: 1 / -1; height: 4px; background: var(--line); border-radius: 2px; }
 .meter div { height: 100%; background: var(--bar); border-radius: 2px; }
+.rule { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto; gap: 8px;
+  align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+.rule:first-of-type { border-top: 0; }
+@media (max-width: 600px) { .rule { grid-template-columns: minmax(0, 1fr); } }
+input:not([type=checkbox]), button { font: inherit; color: inherit; border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 8px; min-width: 0; background: var(--bg); }
+button { background: var(--card); cursor: pointer; }
+.checks { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--muted); }
+.error { color: #d0453a; margin: 0 0 8px; } p { margin: 0 0 8px; }
 "
 
 pub fn page(
@@ -66,6 +77,51 @@ pub fn page(
     "" -> "all devices"
     device -> device
   }
+  document("Screen time", [
+    html.header([], [
+      html.h1([], [text("Screen time")]),
+      html.nav(
+        [],
+        list.map([#(1, "Today"), #(7, "7 days"), #(30, "30 days")], fn(range) {
+          link(range.0, filter.device, range.1, range.0 == filter.days)
+        })
+          |> list.append([html.a([href("/categories")], [text("Categories")])]),
+      ),
+    ]),
+    html.nav([class("devices")], [
+      link(filter.days, "", "All devices", filter.device == ""),
+      ..list.map(devices, fn(device) {
+        link(
+          filter.days,
+          device.name,
+          device.name,
+          device.name == filter.device,
+        )
+      })
+    ]),
+    html.section([], [
+      html.div([class("big")], [text(duration(total))]),
+      html.div([class("muted")], [
+        text(case filter.days {
+          1 -> "today on " <> device_name
+          days ->
+            "on "
+            <> device_name
+            <> " · "
+            <> duration(total / days)
+            <> " per day on average"
+        }),
+      ]),
+      chart(timeline),
+    ]),
+    html.div(
+      [class("grid")],
+      list.map(sections, fn(section) { usage_list(section.0, section.1) }),
+    ),
+  ])
+}
+
+fn document(title: String, children: List(Element(msg))) -> String {
   html.html([attribute.lang("en")], [
     html.head([], [
       html.meta([attribute.charset("utf-8")]),
@@ -73,57 +129,141 @@ pub fn page(
         attribute.name("viewport"),
         attribute.content("width=device-width, initial-scale=1"),
       ]),
-      html.title([], "Screen time"),
+      html.title([], title),
       html.style([], css),
     ]),
-    html.body([], [
-      html.main([], [
-        html.header([], [
-          html.h1([], [text("Screen time")]),
-          html.nav(
-            [],
-            list.map(
-              [#(1, "Today"), #(7, "7 days"), #(30, "30 days")],
-              fn(range) {
-                link(range.0, filter.device, range.1, range.0 == filter.days)
-              },
-            ),
-          ),
-        ]),
-        html.nav([class("devices")], [
-          link(filter.days, "", "All devices", filter.device == ""),
-          ..list.map(devices, fn(device) {
-            link(
-              filter.days,
-              device.name,
-              device.name,
-              device.name == filter.device,
-            )
-          })
-        ]),
-        html.section([], [
-          html.div([class("big")], [text(duration(total))]),
-          html.div([class("muted")], [
-            text(case filter.days {
-              1 -> "today on " <> device_name
-              days ->
-                "on "
-                <> device_name
-                <> " · "
-                <> duration(total / days)
-                <> " per day on average"
-            }),
-          ]),
-          chart(timeline),
-        ]),
-        html.div(
-          [class("grid")],
-          list.map(sections, fn(section) { usage_list(section.0, section.1) }),
-        ),
-      ]),
-    ]),
+    html.body([], [html.main([], children)]),
   ])
   |> element.to_document_string
+}
+
+/// The category rules, one form each, and what has no category yet.
+pub fn categories_page(
+  rules: List(Rule),
+  devices: List(String),
+  error: String,
+  sections: List(#(String, List(Usage))),
+) -> String {
+  // devices of rules might not have sent anything yet
+  let devices =
+    list.flat_map(rules, fn(rule) { rule.devices })
+    |> list.append(devices)
+    |> list.unique
+    |> list.sort(string.compare)
+  document("Categories", [
+    html.header([], [
+      html.h1([], [text("Categories")]),
+      html.nav([], [html.a([href("/")], [text("Screen time")])]),
+    ]),
+    html.section([], [
+      html.p([class("muted")], [
+        text(
+          "Every app and window title gets the deepest category whose regex
+          matches it (for browser tabs: the domain and tab title). Use > for
+          subcategories, like Work > Programming. A rule without devices
+          applies to all of them.",
+        ),
+      ]),
+      case error {
+        "" -> element.none()
+        error -> html.p([class("error")], [text(error)])
+      },
+      case
+        list.any(categories.defaults, fn(default) {
+          !list.any(rules, fn(rule) { rule.name == default.name })
+        })
+      {
+        True ->
+          html.form(
+            [attribute.method("post"), attribute.action("/categories/defaults")],
+            [html.button([], [text("Add missing default categories")])],
+          )
+        False -> element.none()
+      },
+      ..list.map(rules, fn(rule) { rule_form(Some(rule.id), rule, devices) })
+      |> list.append([rule_form(None, Rule(0, "", "", True, []), devices)])
+    ]),
+    html.div(
+      [class("grid")],
+      list.map(sections, fn(section) { usage_list(section.0, section.1) }),
+    ),
+  ])
+}
+
+fn rule_form(
+  id: Option(Int),
+  rule: Rule,
+  devices: List(String),
+) -> Element(msg) {
+  let checkbox = fn(name, value, checked, label) {
+    html.label([], [
+      html.input([
+        attribute.type_("checkbox"),
+        attribute.name(name),
+        attribute.value(value),
+        attribute.checked(checked),
+      ]),
+      text(" " <> label),
+    ])
+  }
+  html.form(
+    [class("rule"), attribute.method("post"), attribute.action("/categories")],
+    [
+      case id {
+        Some(id) ->
+          html.input([
+            attribute.type_("hidden"),
+            attribute.name("id"),
+            attribute.value(int.to_string(id)),
+          ])
+        None -> element.none()
+      },
+      html.input([
+        attribute.name("name"),
+        attribute.value(rule.name),
+        attribute.placeholder("Work > Programming"),
+        attribute.required(True),
+      ]),
+      html.input([
+        attribute.name("regex"),
+        attribute.value(rule.regex),
+        attribute.placeholder("code|vim|github"),
+        attribute.required(True),
+      ]),
+      html.div([], [
+        html.button([], [
+          text(case id {
+            Some(_) -> "Save"
+            None -> "Add"
+          }),
+        ]),
+        case id {
+          Some(id) ->
+            html.button(
+              [
+                attribute.formaction(
+                  "/categories/" <> int.to_string(id) <> "/delete",
+                ),
+                style("margin-left", "6px"),
+              ],
+              [text("Delete")],
+            )
+          None -> element.none()
+        },
+      ]),
+      html.div([class("checks")], [
+        checkbox("ignore_case", "on", rule.ignore_case, "ignore case"),
+        ..list.map(devices, fn(device) {
+          checkbox(
+            "devices",
+            device,
+            list.contains(rule.devices, device),
+            device,
+          )
+        })
+      ]),
+    ],
+  )
 }
 
 fn chart(buckets: List(Usage)) -> Element(msg) {

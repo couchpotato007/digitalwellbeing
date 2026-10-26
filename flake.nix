@@ -40,6 +40,16 @@
             --stop-signal SIGKILL --stop-timeout 2 -r \
             "fuser -k ''${PORT}/tcp 2>/dev/null; gleam run"
         '';
+
+        # regenerates server/src/server/sql.gleam after changing the schema or a query
+        "sql" = ''
+          set -euo pipefail
+          cd server
+          mkdir -p build
+          rm -f build/schema.sqlite3
+          sqlite3 build/schema.sqlite3 < priv/schema.sql
+          gleam run -m parrot -- --sqlite build/schema.sqlite3
+        '';
       };
 
       scriptPackages = pkgs.lib.mapAttrsToList (name: body: pkgs.writeShellScriptBin name body) myScripts;

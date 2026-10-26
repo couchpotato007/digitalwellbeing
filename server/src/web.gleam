@@ -1,3 +1,4 @@
+import categories
 import dashboard
 import db
 import gleam/bit_array
@@ -8,8 +9,11 @@ import gleam/http/request
 import gleam/int
 import gleam/json
 import gleam/list
+import gleam/option
+import gleam/pair
 import gleam/result
 import gleam/string
+import gleam/uri
 import shared
 import sqlight
 import wisp
@@ -25,6 +29,10 @@ pub fn handle_request(req: wisp.Request, ctx: Context) -> wisp.Response {
   use <- require_token(req, ctx.token)
   case req.method, wisp.path_segments(req) {
     http.Get, [] -> dashboard(req, ctx)
+    http.Get, ["categories"] -> categories_page(req, ctx)
+    http.Post, ["categories"] -> save_category(req, ctx)
+    http.Post, ["categories", "defaults"] -> add_defaults(req, ctx)
+    http.Post, ["categories", id, "delete"] -> delete_category(req, ctx, id)
     http.Get, ["api", "devices", device, "cursor"] -> cursor(ctx, device)
     http.Post, ["api", "devices", device, "events"] -> ingest(req, ctx, device)
     _, _ -> wisp.not_found()
@@ -78,11 +86,17 @@ fn ingest(req: wisp.Request, ctx: Context, device: String) -> wisp.Response {
   use body <- wisp.require_json(req)
   case decode.run(body, shared.upload_decoder()) {
     Error(_) -> wisp.unprocessable_content()
-    Ok(upload) ->
-      case db.replace_events(ctx.db, device, upload) {
+    Ok(upload) -> {
+      let written = {
+        use rules <- result.try(db.rules(ctx.db))
+        let category = categories.categorizer(rules)
+        db.replace_events(ctx.db, device, upload, category)
+      }
+      case written {
         Ok(Nil) -> wisp.no_content()
         Error(err) -> db_error(err)
       }
+    }
   }
 }
 
@@ -93,13 +107,10 @@ fn dashboard(req: wisp.Request, ctx: Context) -> wisp.Response {
     |> result.try(int.parse)
     |> result.unwrap(1)
     |> int.clamp(1, 365)
-  let filter =
-    db.Filter(
-      days:,
-      device: list.key_find(query, "device") |> result.unwrap(""),
-    )
+  let device = list.key_find(query, "device") |> result.unwrap("")
   let data = {
-    use devices <- result.try(db.devices(ctx.db, days))
+    use filter <- result.try(db.filter(ctx.db, days, device))
+    use devices <- result.try(db.devices(ctx.db, filter))
     use timeline <- result.try(db.timeline(ctx.db, filter))
     use categories <- result.try(db.categories(ctx.db, filter))
     use apps <- result.try(db.apps(ctx.db, filter))
@@ -119,6 +130,86 @@ fn dashboard(req: wisp.Request, ctx: Context) -> wisp.Response {
   }
   case data {
     Ok(html) -> wisp.html_response(html, 200)
+    Error(err) -> db_error(err)
+  }
+}
+
+fn categories_page(req: wisp.Request, ctx: Context) -> wisp.Response {
+  let error = wisp.get_query(req) |> list.key_find("error") |> result.unwrap("")
+  let page = {
+    use rules <- result.try(db.rules(ctx.db))
+    use devices <- result.try(db.device_names(ctx.db))
+    use last_30_days <- result.try(db.filter(ctx.db, 30, ""))
+    use apps <- result.try(db.uncategorized_apps(ctx.db, last_30_days))
+    use titles <- result.map(db.uncategorized_titles(ctx.db, last_30_days))
+    dashboard.categories_page(rules, devices, error, [
+      #("Uncategorized apps and domains · 30 days", apps),
+      #("Uncategorized window titles · 30 days", titles),
+    ])
+  }
+  case page {
+    Ok(html) -> wisp.html_response(html, 200)
+    Error(err) -> db_error(err)
+  }
+}
+
+fn save_category(req: wisp.Request, ctx: Context) -> wisp.Response {
+  use req <- wisp.csrf_known_header_protection(req)
+  use form <- wisp.require_form(req)
+  let field = fn(name) { list.key_find(form.values, name) |> result.unwrap("") }
+  let rule =
+    categories.Rule(
+      id: 0,
+      name: categories.normalize_name(field("name")),
+      regex: field("regex"),
+      ignore_case: field("ignore_case") == "on",
+      devices: list.filter(form.values, fn(v) { v.0 == "devices" })
+        |> list.map(pair.second),
+    )
+  let valid = case rule.name, rule.regex {
+    "", _ -> Error("The category needs a name")
+    _, "" -> Error("The category needs a regex")
+    _, _ -> categories.compile(rule.regex, rule.ignore_case)
+  }
+  case valid {
+    Error(message) ->
+      wisp.redirect("/categories?error=" <> uri.percent_encode(message))
+    Ok(_) -> {
+      let id = field("id") |> int.parse |> option.from_result
+      rules_changed(ctx, db.save_rule(ctx.db, id, rule))
+    }
+  }
+}
+
+fn delete_category(
+  req: wisp.Request,
+  ctx: Context,
+  id: String,
+) -> wisp.Response {
+  use _req <- wisp.csrf_known_header_protection(req)
+  case int.parse(id) {
+    Ok(id) -> rules_changed(ctx, db.delete_rule(ctx.db, id))
+    Error(Nil) -> wisp.not_found()
+  }
+}
+
+fn add_defaults(req: wisp.Request, ctx: Context) -> wisp.Response {
+  use _req <- wisp.csrf_known_header_protection(req)
+  rules_changed(ctx, db.add_rules(ctx.db, categories.defaults))
+}
+
+/// Stored events are put into the changed categories right away.
+fn rules_changed(
+  ctx: Context,
+  changed: Result(Nil, sqlight.Error),
+) -> wisp.Response {
+  let done = {
+    use _ <- result.try(changed)
+    use rules <- result.try(db.rules(ctx.db))
+    db.recategorize(ctx.db, categories.categorizer(rules))
+  }
+  case done {
+    Ok(Nil) -> wisp.redirect("/categories")
     Error(err) -> db_error(err)
   }
 }

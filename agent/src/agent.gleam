@@ -117,9 +117,8 @@ fn sync(cfg: Config) -> Result(Int, String) {
 const browsers =
   "(?i)firefox|zen|chrom|brave|edge|vivaldi|opera|safari|browser|librewolf|floorp|waterfox"
 
-/// Window and browser tab events from ActivityWatch, categorized with the
-/// categories set up in ActivityWatch. On desktops the time the user was away
-/// (AFK) is cut out; Android only reports real usage anyway.
+/// Window and browser tab events from ActivityWatch, without the time the
+/// user was away (AFK). The server puts them into categories.
 fn query_activitywatch(
   base: String,
   from: Timestamp,
@@ -151,7 +150,6 @@ fn query_activitywatch(
       <> "), \"status\", [\"not-afk\"]));"
     [] -> "window = flood(" <> window <> ");"
   }
-  let categories = categories(base)
   let run = fn(kind, query) {
     let body =
       json.object([
@@ -173,7 +171,7 @@ fn query_activitywatch(
   }
   use windows <- result.try(run(
     shared.Window,
-    "RETURN = categorize(window, " <> categories <> ");",
+    "RETURN = window;",
   ))
   use tabs <- result.map(
     list.try_map(find("web.tab.current"), fn(web) {
@@ -181,56 +179,14 @@ fn query_activitywatch(
         shared.Web,
         "browser = filter_keyvals_regex(window, \"app\", "
           <> quote(browsers)
-          <> "); RETURN = categorize(filter_period_intersect(flood("
+          <> "); RETURN = filter_period_intersect(flood("
           <> web
-          <> "), browser), "
-          <> categories
-          <> ");",
+          <> "), browser);",
       )
     }),
   )
   list.flatten([windows, ..tabs])
   |> list.filter(fn(e) { e.duration_ms > 0 })
-}
-
-/// The regex categories from the ActivityWatch settings, in the format the
-/// query function `categorize` takes. Everything else ends up "Uncategorized".
-fn categories(base: String) -> String {
-  get(
-    base <> "/api/0/settings/classes",
-    "",
-    decode.list({
-      use name <- decode.field("name", decode.list(decode.string))
-      use kind <- decode.subfield(
-        ["rule", "type"],
-        decode.optional(decode.string),
-      )
-      use regex <- decode.then(decode.optionally_at(
-        ["rule", "regex"],
-        "",
-        decode.string,
-      ))
-      use ignore_case <- decode.then(decode.optionally_at(
-        ["rule", "ignore_case"],
-        False,
-        decode.bool,
-      ))
-      decode.success(#(name, kind, regex, ignore_case))
-    }),
-  )
-  |> result.unwrap([])
-  |> list.filter(fn(class) { class.1 == Some("regex") && class.2 != "" })
-  |> json.array(fn(class) {
-    json.preprocessed_array([
-      json.array(class.0, json.string),
-      json.object([
-        #("type", json.string("regex")),
-        #("regex", json.string(class.2)),
-        #("ignore_case", json.bool(class.3)),
-      ]),
-    ])
-  })
-  |> json.to_string
 }
 
 fn aw_event_decoder(kind: shared.Kind) -> decode.Decoder(Event) {
@@ -251,11 +207,6 @@ fn aw_event_decoder(kind: shared.Kind) -> decode.Decoder(Event) {
     "",
     decode.string,
   ))
-  use category <- decode.then(decode.optionally_at(
-    ["data", "$category"],
-    "Uncategorized",
-    decode.list(decode.string) |> decode.map(string.join(_, " > ")),
-  ))
   case timestamp.parse_rfc3339(start) {
     Ok(start) ->
       decode.success(Event(
@@ -264,10 +215,9 @@ fn aw_event_decoder(kind: shared.Kind) -> decode.Decoder(Event) {
         duration_ms: float.round(seconds *. 1000.0),
         app:,
         title:,
-        category:,
       ))
     Error(Nil) ->
-      decode.failure(Event(kind, 0, 0, "", "", ""), "RFC 3339 timestamp")
+      decode.failure(Event(kind, 0, 0, "", ""), "RFC 3339 timestamp")
   }
 }
 

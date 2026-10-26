@@ -15,8 +15,6 @@ pub type Event {
     duration_ms: Int,
     app: String,
     title: String,
-    /// ActivityWatch category path like "Work > Programming"
-    category: String,
   )
 }
 
@@ -39,7 +37,6 @@ pub fn event_to_json(event: Event) -> json.Json {
     #("duration_ms", json.int(event.duration_ms)),
     #("app", json.string(event.app)),
     #("title", json.string(event.title)),
-    #("category", json.string(event.category)),
   ])
 }
 
@@ -56,8 +53,7 @@ pub fn event_decoder() -> decode.Decoder(Event) {
   use duration_ms <- decode.field("duration_ms", decode.int)
   use app <- decode.field("app", decode.string)
   use title <- decode.field("title", decode.string)
-  use category <- decode.field("category", decode.string)
-  decode.success(Event(kind:, start_ms:, duration_ms:, app:, title:, category:))
+  decode.success(Event(kind:, start_ms:, duration_ms:, app:, title:))
 }
 
 /// Replaces all events of a device from `from_ms` on with `events`.
