@@ -7,6 +7,8 @@ import sqlight
 
 pub type DbError {
   QueryFailed(String)
+  /// A UNIQUE, FOREIGN KEY or CHECK constraint rejected the write.
+  ConstraintViolation(String)
   ExpectedOneRow
   ExpectedAtMostOneRow
 }
@@ -14,8 +16,21 @@ pub type DbError {
 pub fn to_string(err: DbError) -> String {
   case err {
     QueryFailed(msg) -> "Database error: " <> msg
+    ConstraintViolation(msg) -> "Constraint violation: " <> msg
     ExpectedOneRow -> "expected one row got zero or multiple"
     ExpectedAtMostOneRow -> "expected one row"
+  }
+}
+
+fn from_sqlight(err: sqlight.Error) -> DbError {
+  case err.code {
+    sqlight.Constraint
+    | sqlight.ConstraintCheck
+    | sqlight.ConstraintForeignkey
+    | sqlight.ConstraintNotnull
+    | sqlight.ConstraintPrimarykey
+    | sqlight.ConstraintUnique -> ConstraintViolation(err.message)
+    _ -> QueryFailed(string.inspect(err))
   }
 }
 
@@ -48,7 +63,7 @@ pub fn exec(
     )
   {
     Ok(_) -> Ok(Nil)
-    Error(err) -> Error(QueryFailed(string.inspect(err)))
+    Error(err) -> Error(from_sqlight(err))
   }
 }
 
@@ -59,7 +74,7 @@ pub fn query(
   let #(sql, with, expecting) = q
   case sqlight.query(sql, on: conn, with: list.map(with, param), expecting:) {
     Ok(rows) -> Ok(rows)
-    Error(err) -> Error(QueryFailed(string.inspect(err)))
+    Error(err) -> Error(from_sqlight(err))
   }
 }
 
@@ -74,7 +89,10 @@ pub fn query_one(
   }
 }
 
-pub fn query_optional(conn, q) {
+pub fn query_optional(
+  conn: sqlight.Connection,
+  q: #(String, List(dev.Param), decode.Decoder(a)),
+) -> Result(option.Option(a), DbError) {
   case query(conn, q) {
     Ok([row]) -> Ok(option.Some(row))
     Ok([]) -> Ok(option.None)

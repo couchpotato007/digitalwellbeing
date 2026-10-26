@@ -1,3 +1,14 @@
+-- name: ListLimitsByUser :many
+SELECT id, user_id, app_id, category_id, daily_seconds
+FROM limits
+WHERE user_id = sqlc.arg(user_id)
+ORDER BY id;
+
+-- name: GetLimit :one
+SELECT id, user_id, app_id, category_id, daily_seconds
+FROM limits
+WHERE id = sqlc.arg(id);
+
 -- name: CreateLimit :one
 INSERT INTO limits (user_id, app_id, category_id, daily_seconds)
 VALUES (
@@ -8,11 +19,13 @@ VALUES (
 )
 RETURNING id, user_id, app_id, category_id, daily_seconds;
 
--- name: ListLimitsByUser :many
-SELECT id, user_id, app_id, category_id, daily_seconds
-FROM limits
-WHERE user_id = sqlc.arg(user_id);
+-- name: UpdateLimit :one
+UPDATE limits
+SET daily_seconds = sqlc.arg(daily_seconds)
+WHERE id = sqlc.arg(id)
+RETURNING id, user_id, app_id, category_id, daily_seconds;
 
--- name: DeleteLimit :exec
+-- name: DeleteLimit :one
 DELETE FROM limits
-WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id);
+WHERE id = sqlc.arg(id)
+RETURNING id;

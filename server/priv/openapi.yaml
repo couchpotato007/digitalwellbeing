@@ -1,0 +1,789 @@
+openapi: 3.0.3
+info:
+  title: Digital Wellbeing API
+  version: 0.1.0
+  description: |
+    Tracks app usage and screen events per device and enforces daily limits.
+
+    Timestamps on app usage are ISO 8601 strings (UTC), screen event
+    timestamps are unix epoch milliseconds and days are `YYYY-MM-DD`.
+servers:
+  - url: /api
+
+
+paths:
+  # ---------------------------------------------------------------- users
+  /users:
+    get:
+      tags: [users]
+      operationId: listUsers
+      summary: List all users
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: All users
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/User" }
+    post:
+      tags: [users]
+      operationId: createUser
+      summary: Create a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserInput" }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "201":
+          description: Created user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+
+  /users/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    get:
+      tags: [users]
+      operationId: getUser
+      summary: Get a user
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: The user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [users]
+      operationId: updateUser
+      summary: Replace a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserInput" }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [users]
+      operationId: deleteUser
+      summary: Delete a user with all devices and limits
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # -------------------------------------------------------------- devices
+  /users/{userId}/devices:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    get:
+      tags: [devices]
+      operationId: listUserDevices
+      summary: List the devices of a user
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: Devices of the user
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Device" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [devices]
+      operationId: createDevice
+      summary: Register a device for a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceInput" }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "201":
+          description: Created device
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /devices/{deviceId}:
+    parameters:
+      - $ref: "#/components/parameters/DeviceId"
+    get:
+      tags: [devices]
+      operationId: getDevice
+      summary: Get a device
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: The device
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [devices]
+      operationId: updateDevice
+      summary: Replace a device
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceInput" }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: Updated device
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [devices]
+      operationId: deleteDevice
+      summary: Delete a device with all its tracked data
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ----------------------------------------------------------- categories
+  /categories:
+    get:
+      tags: [categories]
+      operationId: listCategories
+      summary: List all categories
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: All categories
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Category" }
+    post:
+      tags: [categories]
+      operationId: createCategory
+      summary: Create a category
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CategoryInput" }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "201":
+          description: Created category
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Category" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /categories/{categoryId}:
+    parameters:
+      - $ref: "#/components/parameters/CategoryId"
+    get:
+      tags: [categories]
+      operationId: getCategory
+      summary: Get a category
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: The category
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Category" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [categories]
+      operationId: updateCategory
+      summary: Rename a category
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CategoryInput" }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: Updated category
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Category" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [categories]
+      operationId: deleteCategory
+      summary: Delete a category (apps keep existing without a category)
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ----------------------------------------------------------------- apps
+  /apps:
+    get:
+      tags: [apps]
+      operationId: listApps
+      summary: List apps, optionally filtered by category
+      parameters:
+        - name: category_id
+          in: query
+          required: false
+          schema: { type: integer, format: int64 }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: Apps ordered by title
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/App" }
+    post:
+      tags: [apps]
+      operationId: upsertApp
+      summary: Register an app or update the title of a known package
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AppInput" }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: The created or updated app
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/App" }
+
+  /apps/{appId}:
+    parameters:
+      - $ref: "#/components/parameters/AppId"
+    get:
+      tags: [apps]
+      operationId: getApp
+      summary: Get an app
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: The app
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/App" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [apps]
+      operationId: updateApp
+      summary: Update title and category of an app
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AppUpdate" }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: Updated app
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/App" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [apps]
+      operationId: deleteApp
+      summary: Delete an app with all its usage data
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------- usage
+  /devices/{deviceId}/usage:
+    parameters:
+      - $ref: "#/components/parameters/DeviceId"
+    get:
+      tags: [usage]
+      operationId: listDeviceUsage
+      summary: List app usage sessions that started in [from, to)
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: Usage sessions ordered by start
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AppUsage" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [usage]
+      operationId: uploadDeviceUsage
+      summary: Upload usage sessions (idempotent per device, app and start)
+      description: Also marks the device as synced.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AppUsageInputList" }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "201":
+          description: Stored usage sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AppUsage" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /usage/{usageId}:
+    parameters:
+      - name: usageId
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    get:
+      tags: [usage]
+      operationId: getUsage
+      summary: Get a usage session
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: The usage session
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppUsage" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [usage]
+      operationId: deleteUsage
+      summary: Delete a usage session
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # -------------------------------------------------------- screen events
+  /devices/{deviceId}/screen-events:
+    parameters:
+      - $ref: "#/components/parameters/DeviceId"
+    get:
+      tags: [screen-events]
+      operationId: listDeviceScreenEvents
+      summary: List screen events in [from, to)
+      parameters:
+        - name: from
+          in: query
+          required: true
+          description: Unix epoch milliseconds
+          schema: { type: integer, format: int64 }
+        - name: to
+          in: query
+          required: true
+          description: Unix epoch milliseconds
+          schema: { type: integer, format: int64 }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: Screen events ordered by timestamp
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ScreenEvent" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [screen-events]
+      operationId: uploadDeviceScreenEvents
+      summary: Upload screen events
+      description: Also marks the device as synced.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScreenEventInputList" }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "201":
+          description: Stored screen events
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ScreenEvent" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /screen-events/{eventId}:
+    parameters:
+      - name: eventId
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    delete:
+      tags: [screen-events]
+      operationId: deleteScreenEvent
+      summary: Delete a screen event
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # --------------------------------------------------------------- limits
+  /users/{userId}/limits:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    get:
+      tags: [limits]
+      operationId: listUserLimits
+      summary: List the daily limits of a user
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: Limits of the user
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Limit" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [limits]
+      operationId: createLimit
+      summary: Create a daily limit for an app or a category
+      description: Exactly one of `app_id` and `category_id` must be set.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LimitInput" }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "201":
+          description: Created limit
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Limit" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /limits/{limitId}:
+    parameters:
+      - name: limitId
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    get:
+      tags: [limits]
+      operationId: getLimit
+      summary: Get a limit
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: The limit
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Limit" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [limits]
+      operationId: updateLimit
+      summary: Change the allowed daily time of a limit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LimitUpdate" }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: Updated limit
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Limit" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [limits]
+      operationId: deleteLimit
+      summary: Delete a limit
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ------------------------------------------------------ daily summaries
+  /devices/{deviceId}/daily-summaries:
+    parameters:
+      - $ref: "#/components/parameters/DeviceId"
+    get:
+      tags: [daily-summaries]
+      operationId: listDeviceDailySummaries
+      summary: List per-app daily totals for days in [from, to]
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: Daily summaries ordered by day and app
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DailySummary" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [daily-summaries]
+      operationId: upsertDeviceDailySummaries
+      summary: Create or replace daily summaries (keyed by app and day)
+      description: Also marks the device as synced.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DailySummaryInputList" }
+      responses:
+        "500": { $ref: "#/components/responses/InternalError" }
+        "200":
+          description: Stored daily summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DailySummary" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+components:
+  parameters:
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    CategoryId:
+      name: categoryId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    AppId:
+      name: appId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+
+  responses:
+    BadRequest:
+      description: The request is invalid
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: The resource does not exist
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InternalError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: The request conflicts with existing data (unique name, unknown reference)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string }
+
+    User:
+      type: object
+      required: [id, name, created_at, updated_at]
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    UserInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+
+    Device:
+      type: object
+      required: [id, user_id, name, platform, last_sync]
+      properties:
+        id: { type: integer, format: int64 }
+        user_id: { type: integer, format: int64 }
+        name: { type: string }
+        platform: { type: string, example: android }
+        last_sync: { type: string, format: date-time }
+    DeviceInput:
+      type: object
+      required: [name, platform]
+      properties:
+        name: { type: string, minLength: 1 }
+        platform: { type: string, minLength: 1, example: android }
+
+    Category:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+    CategoryInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+
+    App:
+      type: object
+      required: [id, package_name, title]
+      properties:
+        id: { type: integer, format: int64 }
+        package_name: { type: string, example: org.mozilla.firefox }
+        title: { type: string, example: Firefox }
+        category_id: { type: integer, format: int64, nullable: true }
+    AppInput:
+      type: object
+      required: [package_name, title]
+      properties:
+        package_name: { type: string, minLength: 1 }
+        title: { type: string, minLength: 1 }
+    AppUpdate:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string, minLength: 1 }
+        category_id: { type: integer, format: int64, nullable: true }
+
+    AppUsage:
+      type: object
+      required: [id, device_id, app_id, started_at, ended_at]
+      properties:
+        id: { type: integer, format: int64 }
+        device_id: { type: integer, format: int64 }
+        app_id: { type: integer, format: int64 }
+        started_at: { type: string, format: date-time }
+        ended_at: { type: string, format: date-time }
+    AppUsageInput:
+      type: object
+      required: [app_id, started_at, ended_at]
+      properties:
+        app_id: { type: integer, format: int64 }
+        started_at: { type: string, format: date-time }
+        ended_at: { type: string, format: date-time }
+
+    ScreenEventType:
+      type: string
+      enum: [screen_on, screen_off, unlock]
+    ScreenEvent:
+      type: object
+      required: [id, device_id, ts, type]
+      properties:
+        id: { type: integer, format: int64 }
+        device_id: { type: integer, format: int64 }
+        ts: { type: integer, format: int64, description: Unix epoch milliseconds }
+        type: { $ref: "#/components/schemas/ScreenEventType" }
+    ScreenEventInput:
+      type: object
+      required: [ts, type]
+      properties:
+        ts: { type: integer, format: int64, description: Unix epoch milliseconds }
+        type: { $ref: "#/components/schemas/ScreenEventType" }
+
+    Limit:
+      type: object
+      required: [id, user_id, daily_seconds]
+      properties:
+        id: { type: integer, format: int64 }
+        user_id: { type: integer, format: int64 }
+        app_id: { type: integer, format: int64, nullable: true }
+        category_id: { type: integer, format: int64, nullable: true }
+        daily_seconds: { type: integer, minimum: 1 }
+    LimitInput:
+      type: object
+      required: [daily_seconds]
+      properties:
+        app_id: { type: integer, format: int64, nullable: true }
+        category_id: { type: integer, format: int64, nullable: true }
+        daily_seconds: { type: integer, minimum: 1 }
+    LimitUpdate:
+      type: object
+      required: [daily_seconds]
+      properties:
+        daily_seconds: { type: integer, minimum: 1 }
+
+    DailySummary:
+      type: object
+      required: [device_id, app_id, day, total_seconds, launches]
+      properties:
+        device_id: { type: integer, format: int64 }
+        app_id: { type: integer, format: int64 }
+        day: { type: string, format: date }
+        total_seconds: { type: integer, minimum: 0 }
+        launches: { type: integer, minimum: 0 }
+    DailySummaryInput:
+      type: object
+      required: [app_id, day, total_seconds]
+      properties:
+        app_id: { type: integer, format: int64 }
+        day: { type: string, format: date }
+        total_seconds: { type: integer, minimum: 0 }
+        launches: { type: integer, minimum: 0, default: 0 }
+    AppUsageInputList:
+      type: array
+      items: { $ref: "#/components/schemas/AppUsageInput" }
+    ScreenEventInputList:
+      type: array
+      items: { $ref: "#/components/schemas/ScreenEventInput" }
+    DailySummaryInputList:
+      type: array
+      items: { $ref: "#/components/schemas/DailySummaryInput" }

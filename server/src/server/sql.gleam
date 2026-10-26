@@ -5,8 +5,8 @@ import gleam/dynamic/decode
 import gleam/option.{type Option}
 import parrot/dev
 
-pub type CreateAppUsage {
-  CreateAppUsage(
+pub type ListAppUsageByDevice {
+  ListAppUsageByDevice(
     id: Int,
     device_id: Int,
     app_id: Int,
@@ -15,7 +15,80 @@ pub type CreateAppUsage {
   )
 }
 
-pub fn create_app_usage(
+pub fn list_app_usage_by_device(
+  device_id device_id: Int,
+  from_ts from_ts: String,
+  to_ts to_ts: String,
+) {
+  let sql =
+    "SELECT id, device_id, app_id, started_at, ended_at
+FROM app_usage
+WHERE device_id = ?1
+  AND started_at >= ?2
+  AND started_at < ?3
+ORDER BY started_at"
+  #(
+    sql,
+    [dev.ParamInt(device_id), dev.ParamString(from_ts), dev.ParamString(to_ts)],
+    list_app_usage_by_device_decoder(),
+  )
+}
+
+pub fn list_app_usage_by_device_decoder() -> decode.Decoder(
+  ListAppUsageByDevice,
+) {
+  use id <- decode.field(0, decode.int)
+  use device_id <- decode.field(1, decode.int)
+  use app_id <- decode.field(2, decode.int)
+  use started_at <- decode.field(3, decode.string)
+  use ended_at <- decode.field(4, decode.string)
+  decode.success(ListAppUsageByDevice(
+    id:,
+    device_id:,
+    app_id:,
+    started_at:,
+    ended_at:,
+  ))
+}
+
+pub type GetAppUsage {
+  GetAppUsage(
+    id: Int,
+    device_id: Int,
+    app_id: Int,
+    started_at: String,
+    ended_at: String,
+  )
+}
+
+pub fn get_app_usage(id id: Int) {
+  let sql =
+    "SELECT id, device_id, app_id, started_at, ended_at
+FROM app_usage
+WHERE id = ?1"
+  #(sql, [dev.ParamInt(id)], get_app_usage_decoder())
+}
+
+pub fn get_app_usage_decoder() -> decode.Decoder(GetAppUsage) {
+  use id <- decode.field(0, decode.int)
+  use device_id <- decode.field(1, decode.int)
+  use app_id <- decode.field(2, decode.int)
+  use started_at <- decode.field(3, decode.string)
+  use ended_at <- decode.field(4, decode.string)
+  decode.success(GetAppUsage(id:, device_id:, app_id:, started_at:, ended_at:))
+}
+
+pub type UpsertAppUsage {
+  UpsertAppUsage(
+    id: Int,
+    device_id: Int,
+    app_id: Int,
+    started_at: String,
+    ended_at: String,
+  )
+}
+
+pub fn upsert_app_usage(
   device_id device_id: Int,
   app_id app_id: Int,
   started_at started_at: String,
@@ -29,6 +102,7 @@ VALUES (
   ?3,
   ?4
 )
+ON CONFLICT(device_id, app_id, started_at) DO UPDATE SET ended_at = excluded.ended_at
 RETURNING id, device_id, app_id, started_at, ended_at"
   #(
     sql,
@@ -38,17 +112,17 @@ RETURNING id, device_id, app_id, started_at, ended_at"
       dev.ParamString(started_at),
       dev.ParamString(ended_at),
     ],
-    create_app_usage_decoder(),
+    upsert_app_usage_decoder(),
   )
 }
 
-pub fn create_app_usage_decoder() -> decode.Decoder(CreateAppUsage) {
+pub fn upsert_app_usage_decoder() -> decode.Decoder(UpsertAppUsage) {
   use id <- decode.field(0, decode.int)
   use device_id <- decode.field(1, decode.int)
   use app_id <- decode.field(2, decode.int)
   use started_at <- decode.field(3, decode.string)
   use ended_at <- decode.field(4, decode.string)
-  decode.success(CreateAppUsage(
+  decode.success(UpsertAppUsage(
     id:,
     device_id:,
     app_id:,
@@ -57,118 +131,21 @@ pub fn create_app_usage_decoder() -> decode.Decoder(CreateAppUsage) {
   ))
 }
 
-pub type ListAppUsageByDeviceAndDay {
-  ListAppUsageByDeviceAndDay(
-    id: Int,
-    device_id: Int,
-    app_id: Int,
-    package_name: String,
-    app_title: String,
-    started_at: String,
-    ended_at: String,
-  )
+pub type DeleteAppUsage {
+  DeleteAppUsage(id: Int)
 }
 
-pub fn list_app_usage_by_device_and_day(
-  device_id device_id: Int,
-  day_start day_start: String,
-  day_end day_end: String,
-) {
+pub fn delete_app_usage(id id: Int) {
   let sql =
-    "SELECT
-  u.id,
-  u.device_id,
-  u.app_id,
-  a.app_id AS package_name,
-  a.title AS app_title,
-  u.started_at,
-  u.ended_at
-FROM app_usage AS u
-JOIN apps AS a ON a.id = u.app_id
-WHERE u.device_id = ?1
-  AND u.started_at >= ?2
-  AND u.started_at < ?3
-ORDER BY u.started_at"
-  #(
-    sql,
-    [
-      dev.ParamInt(device_id),
-      dev.ParamString(day_start),
-      dev.ParamString(day_end),
-    ],
-    list_app_usage_by_device_and_day_decoder(),
-  )
+    "DELETE FROM app_usage
+WHERE id = ?1
+RETURNING id"
+  #(sql, [dev.ParamInt(id)], delete_app_usage_decoder())
 }
 
-pub fn list_app_usage_by_device_and_day_decoder() -> decode.Decoder(
-  ListAppUsageByDeviceAndDay,
-) {
+pub fn delete_app_usage_decoder() -> decode.Decoder(DeleteAppUsage) {
   use id <- decode.field(0, decode.int)
-  use device_id <- decode.field(1, decode.int)
-  use app_id <- decode.field(2, decode.int)
-  use package_name <- decode.field(3, decode.string)
-  use app_title <- decode.field(4, decode.string)
-  use started_at <- decode.field(5, decode.string)
-  use ended_at <- decode.field(6, decode.string)
-  decode.success(ListAppUsageByDeviceAndDay(
-    id:,
-    device_id:,
-    app_id:,
-    package_name:,
-    app_title:,
-    started_at:,
-    ended_at:,
-  ))
-}
-
-pub type UpsertApp {
-  UpsertApp(id: Int, app_id: String, title: String, category_id: Option(Int))
-}
-
-pub fn upsert_app(app_id app_id: String, title title: String) {
-  let sql =
-    "INSERT INTO apps (app_id, title)
-VALUES (?1, ?2)
-ON CONFLICT(app_id) DO UPDATE SET title = excluded.title
-RETURNING id, app_id, title, category_id"
-  #(
-    sql,
-    [dev.ParamString(app_id), dev.ParamString(title)],
-    upsert_app_decoder(),
-  )
-}
-
-pub fn upsert_app_decoder() -> decode.Decoder(UpsertApp) {
-  use id <- decode.field(0, decode.int)
-  use app_id <- decode.field(1, decode.string)
-  use title <- decode.field(2, decode.string)
-  use category_id <- decode.field(3, decode.optional(decode.int))
-  decode.success(UpsertApp(id:, app_id:, title:, category_id:))
-}
-
-pub type GetAppByAppId {
-  GetAppByAppId(
-    id: Int,
-    app_id: String,
-    title: String,
-    category_id: Option(Int),
-  )
-}
-
-pub fn get_app_by_app_id(app_id app_id: String) {
-  let sql =
-    "SELECT id, app_id, title, category_id
-FROM apps
-WHERE app_id = ?1"
-  #(sql, [dev.ParamString(app_id)], get_app_by_app_id_decoder())
-}
-
-pub fn get_app_by_app_id_decoder() -> decode.Decoder(GetAppByAppId) {
-  use id <- decode.field(0, decode.int)
-  use app_id <- decode.field(1, decode.string)
-  use title <- decode.field(2, decode.string)
-  use category_id <- decode.field(3, decode.optional(decode.int))
-  decode.success(GetAppByAppId(id:, app_id:, title:, category_id:))
+  decode.success(DeleteAppUsage(id:))
 }
 
 pub type ListApps {
@@ -191,34 +168,155 @@ pub fn list_apps_decoder() -> decode.Decoder(ListApps) {
   decode.success(ListApps(id:, app_id:, title:, category_id:))
 }
 
-pub fn set_app_category(category_id category_id: Option(Int), id id: Int) {
+pub type ListAppsByCategory {
+  ListAppsByCategory(
+    id: Int,
+    app_id: String,
+    title: String,
+    category_id: Option(Int),
+  )
+}
+
+pub fn list_apps_by_category(category_id category_id: Option(Int)) {
+  let sql =
+    "SELECT id, app_id, title, category_id
+FROM apps
+WHERE category_id = ?1
+ORDER BY title"
+  #(
+    sql,
+    [dev.ParamNullable(option.map(category_id, fn(v) { dev.ParamInt(v) }))],
+    list_apps_by_category_decoder(),
+  )
+}
+
+pub fn list_apps_by_category_decoder() -> decode.Decoder(ListAppsByCategory) {
+  use id <- decode.field(0, decode.int)
+  use app_id <- decode.field(1, decode.string)
+  use title <- decode.field(2, decode.string)
+  use category_id <- decode.field(3, decode.optional(decode.int))
+  decode.success(ListAppsByCategory(id:, app_id:, title:, category_id:))
+}
+
+pub type GetApp {
+  GetApp(id: Int, app_id: String, title: String, category_id: Option(Int))
+}
+
+pub fn get_app(id id: Int) {
+  let sql =
+    "SELECT id, app_id, title, category_id
+FROM apps
+WHERE id = ?1"
+  #(sql, [dev.ParamInt(id)], get_app_decoder())
+}
+
+pub fn get_app_decoder() -> decode.Decoder(GetApp) {
+  use id <- decode.field(0, decode.int)
+  use app_id <- decode.field(1, decode.string)
+  use title <- decode.field(2, decode.string)
+  use category_id <- decode.field(3, decode.optional(decode.int))
+  decode.success(GetApp(id:, app_id:, title:, category_id:))
+}
+
+pub type GetAppByPackageName {
+  GetAppByPackageName(
+    id: Int,
+    app_id: String,
+    title: String,
+    category_id: Option(Int),
+  )
+}
+
+pub fn get_app_by_package_name(package_name package_name: String) {
+  let sql =
+    "SELECT id, app_id, title, category_id
+FROM apps
+WHERE app_id = ?1"
+  #(sql, [dev.ParamString(package_name)], get_app_by_package_name_decoder())
+}
+
+pub fn get_app_by_package_name_decoder() -> decode.Decoder(GetAppByPackageName) {
+  use id <- decode.field(0, decode.int)
+  use app_id <- decode.field(1, decode.string)
+  use title <- decode.field(2, decode.string)
+  use category_id <- decode.field(3, decode.optional(decode.int))
+  decode.success(GetAppByPackageName(id:, app_id:, title:, category_id:))
+}
+
+pub type UpsertApp {
+  UpsertApp(id: Int, app_id: String, title: String, category_id: Option(Int))
+}
+
+pub fn upsert_app(package_name package_name: String, title title: String) {
+  let sql =
+    "INSERT INTO apps (app_id, title)
+VALUES (?1, ?2)
+ON CONFLICT(app_id) DO UPDATE SET title = excluded.title
+RETURNING id, app_id, title, category_id"
+  #(
+    sql,
+    [dev.ParamString(package_name), dev.ParamString(title)],
+    upsert_app_decoder(),
+  )
+}
+
+pub fn upsert_app_decoder() -> decode.Decoder(UpsertApp) {
+  use id <- decode.field(0, decode.int)
+  use app_id <- decode.field(1, decode.string)
+  use title <- decode.field(2, decode.string)
+  use category_id <- decode.field(3, decode.optional(decode.int))
+  decode.success(UpsertApp(id:, app_id:, title:, category_id:))
+}
+
+pub type UpdateApp {
+  UpdateApp(id: Int, app_id: String, title: String, category_id: Option(Int))
+}
+
+pub fn update_app(
+  title title: String,
+  category_id category_id: Option(Int),
+  id id: Int,
+) {
   let sql =
     "UPDATE apps
-SET category_id = ?1
-WHERE id = ?2"
-  #(sql, [
-    dev.ParamNullable(option.map(category_id, fn(v) { dev.ParamInt(v) })),
-    dev.ParamInt(id),
-  ])
+SET title = ?1,
+    category_id = ?2
+WHERE id = ?3
+RETURNING id, app_id, title, category_id"
+  #(
+    sql,
+    [
+      dev.ParamString(title),
+      dev.ParamNullable(option.map(category_id, fn(v) { dev.ParamInt(v) })),
+      dev.ParamInt(id),
+    ],
+    update_app_decoder(),
+  )
 }
 
-pub type CreateCategory {
-  CreateCategory(id: Int, name: String)
-}
-
-pub fn create_category(name name: String) {
-  let sql =
-    "INSERT INTO categories (name)
-VALUES (?1)
-ON CONFLICT(name) DO UPDATE SET name = excluded.name
-RETURNING id, name"
-  #(sql, [dev.ParamString(name)], create_category_decoder())
-}
-
-pub fn create_category_decoder() -> decode.Decoder(CreateCategory) {
+pub fn update_app_decoder() -> decode.Decoder(UpdateApp) {
   use id <- decode.field(0, decode.int)
-  use name <- decode.field(1, decode.string)
-  decode.success(CreateCategory(id:, name:))
+  use app_id <- decode.field(1, decode.string)
+  use title <- decode.field(2, decode.string)
+  use category_id <- decode.field(3, decode.optional(decode.int))
+  decode.success(UpdateApp(id:, app_id:, title:, category_id:))
+}
+
+pub type DeleteApp {
+  DeleteApp(id: Int)
+}
+
+pub fn delete_app(id id: Int) {
+  let sql =
+    "DELETE FROM apps
+WHERE id = ?1
+RETURNING id"
+  #(sql, [dev.ParamInt(id)], delete_app_decoder())
+}
+
+pub fn delete_app_decoder() -> decode.Decoder(DeleteApp) {
+  use id <- decode.field(0, decode.int)
+  decode.success(DeleteApp(id:))
 }
 
 pub type ListCategories {
@@ -237,6 +335,138 @@ pub fn list_categories_decoder() -> decode.Decoder(ListCategories) {
   use id <- decode.field(0, decode.int)
   use name <- decode.field(1, decode.string)
   decode.success(ListCategories(id:, name:))
+}
+
+pub type GetCategory {
+  GetCategory(id: Int, name: String)
+}
+
+pub fn get_category(id id: Int) {
+  let sql =
+    "SELECT id, name
+FROM categories
+WHERE id = ?1"
+  #(sql, [dev.ParamInt(id)], get_category_decoder())
+}
+
+pub fn get_category_decoder() -> decode.Decoder(GetCategory) {
+  use id <- decode.field(0, decode.int)
+  use name <- decode.field(1, decode.string)
+  decode.success(GetCategory(id:, name:))
+}
+
+pub type CreateCategory {
+  CreateCategory(id: Int, name: String)
+}
+
+pub fn create_category(name name: String) {
+  let sql =
+    "INSERT INTO categories (name)
+VALUES (?1)
+RETURNING id, name"
+  #(sql, [dev.ParamString(name)], create_category_decoder())
+}
+
+pub fn create_category_decoder() -> decode.Decoder(CreateCategory) {
+  use id <- decode.field(0, decode.int)
+  use name <- decode.field(1, decode.string)
+  decode.success(CreateCategory(id:, name:))
+}
+
+pub type UpdateCategory {
+  UpdateCategory(id: Int, name: String)
+}
+
+pub fn update_category(name name: String, id id: Int) {
+  let sql =
+    "UPDATE categories
+SET name = ?1
+WHERE id = ?2
+RETURNING id, name"
+  #(sql, [dev.ParamString(name), dev.ParamInt(id)], update_category_decoder())
+}
+
+pub fn update_category_decoder() -> decode.Decoder(UpdateCategory) {
+  use id <- decode.field(0, decode.int)
+  use name <- decode.field(1, decode.string)
+  decode.success(UpdateCategory(id:, name:))
+}
+
+pub type DeleteCategory {
+  DeleteCategory(id: Int)
+}
+
+pub fn delete_category(id id: Int) {
+  let sql =
+    "DELETE FROM categories
+WHERE id = ?1
+RETURNING id"
+  #(sql, [dev.ParamInt(id)], delete_category_decoder())
+}
+
+pub fn delete_category_decoder() -> decode.Decoder(DeleteCategory) {
+  use id <- decode.field(0, decode.int)
+  decode.success(DeleteCategory(id:))
+}
+
+pub type ListDailySummariesByDevice {
+  ListDailySummariesByDevice(
+    device_id: Int,
+    app_id: Int,
+    day: String,
+    total_seconds: Int,
+    launches: Int,
+  )
+}
+
+pub fn list_daily_summaries_by_device(
+  device_id device_id: Int,
+  from_day from_day: String,
+  to_day to_day: String,
+) {
+  let sql =
+    "SELECT device_id, app_id, day, total_seconds, launches
+FROM daily_summary
+WHERE device_id = ?1
+  AND day >= ?2
+  AND day <= ?3
+ORDER BY day, app_id"
+  #(
+    sql,
+    [
+      dev.ParamInt(device_id),
+      dev.ParamString(from_day),
+      dev.ParamString(to_day),
+    ],
+    list_daily_summaries_by_device_decoder(),
+  )
+}
+
+pub fn list_daily_summaries_by_device_decoder() -> decode.Decoder(
+  ListDailySummariesByDevice,
+) {
+  use device_id <- decode.field(0, decode.int)
+  use app_id <- decode.field(1, decode.int)
+  use day <- decode.field(2, decode.string)
+  use total_seconds <- decode.field(3, decode.int)
+  use launches <- decode.field(4, decode.int)
+  decode.success(ListDailySummariesByDevice(
+    device_id:,
+    app_id:,
+    day:,
+    total_seconds:,
+    launches:,
+  ))
+}
+
+pub type UpsertDailySummary {
+  UpsertDailySummary(
+    device_id: Int,
+    app_id: Int,
+    day: String,
+    total_seconds: Int,
+    launches: Int,
+  )
 }
 
 pub fn upsert_daily_summary(
@@ -258,57 +488,89 @@ VALUES (
 ON CONFLICT(device_id, app_id, day)
 DO UPDATE SET
   total_seconds = excluded.total_seconds,
-  launches = excluded.launches"
-  #(sql, [
-    dev.ParamInt(device_id),
-    dev.ParamInt(app_id),
-    dev.ParamString(day),
-    dev.ParamInt(total_seconds),
-    dev.ParamInt(launches),
-  ])
-}
-
-pub type ListDailySummaryByDeviceAndDay {
-  ListDailySummaryByDeviceAndDay(
-    device_id: Int,
-    app_id: Int,
-    day: String,
-    total_seconds: Int,
-    launches: Int,
-  )
-}
-
-pub fn list_daily_summary_by_device_and_day(
-  device_id device_id: Int,
-  day day: String,
-) {
-  let sql =
-    "SELECT device_id, app_id, day, total_seconds, launches
-FROM daily_summary
-WHERE device_id = ?1 AND day = ?2
-ORDER BY app_id"
+  launches = excluded.launches
+RETURNING device_id, app_id, day, total_seconds, launches"
   #(
     sql,
-    [dev.ParamInt(device_id), dev.ParamString(day)],
-    list_daily_summary_by_device_and_day_decoder(),
+    [
+      dev.ParamInt(device_id),
+      dev.ParamInt(app_id),
+      dev.ParamString(day),
+      dev.ParamInt(total_seconds),
+      dev.ParamInt(launches),
+    ],
+    upsert_daily_summary_decoder(),
   )
 }
 
-pub fn list_daily_summary_by_device_and_day_decoder() -> decode.Decoder(
-  ListDailySummaryByDeviceAndDay,
-) {
+pub fn upsert_daily_summary_decoder() -> decode.Decoder(UpsertDailySummary) {
   use device_id <- decode.field(0, decode.int)
   use app_id <- decode.field(1, decode.int)
   use day <- decode.field(2, decode.string)
   use total_seconds <- decode.field(3, decode.int)
   use launches <- decode.field(4, decode.int)
-  decode.success(ListDailySummaryByDeviceAndDay(
+  decode.success(UpsertDailySummary(
     device_id:,
     app_id:,
     day:,
     total_seconds:,
     launches:,
   ))
+}
+
+pub type ListDevicesByUser {
+  ListDevicesByUser(
+    id: Int,
+    user_id: Int,
+    name: String,
+    platform: String,
+    last_sync: String,
+  )
+}
+
+pub fn list_devices_by_user(user_id user_id: Int) {
+  let sql =
+    "SELECT id, user_id, name, platform, last_sync
+FROM devices
+WHERE user_id = ?1
+ORDER BY name"
+  #(sql, [dev.ParamInt(user_id)], list_devices_by_user_decoder())
+}
+
+pub fn list_devices_by_user_decoder() -> decode.Decoder(ListDevicesByUser) {
+  use id <- decode.field(0, decode.int)
+  use user_id <- decode.field(1, decode.int)
+  use name <- decode.field(2, decode.string)
+  use platform <- decode.field(3, decode.string)
+  use last_sync <- decode.field(4, decode.string)
+  decode.success(ListDevicesByUser(id:, user_id:, name:, platform:, last_sync:))
+}
+
+pub type GetDevice {
+  GetDevice(
+    id: Int,
+    user_id: Int,
+    name: String,
+    platform: String,
+    last_sync: String,
+  )
+}
+
+pub fn get_device(id id: Int) {
+  let sql =
+    "SELECT id, user_id, name, platform, last_sync
+FROM devices
+WHERE id = ?1"
+  #(sql, [dev.ParamInt(id)], get_device_decoder())
+}
+
+pub fn get_device_decoder() -> decode.Decoder(GetDevice) {
+  use id <- decode.field(0, decode.int)
+  use user_id <- decode.field(1, decode.int)
+  use name <- decode.field(2, decode.string)
+  use platform <- decode.field(3, decode.string)
+  use last_sync <- decode.field(4, decode.string)
+  decode.success(GetDevice(id:, user_id:, name:, platform:, last_sync:))
 }
 
 pub type CreateDevice {
@@ -346,8 +608,8 @@ pub fn create_device_decoder() -> decode.Decoder(CreateDevice) {
   decode.success(CreateDevice(id:, user_id:, name:, platform:, last_sync:))
 }
 
-pub type GetDevice {
-  GetDevice(
+pub type UpdateDevice {
+  UpdateDevice(
     id: Int,
     user_id: Int,
     name: String,
@@ -356,57 +618,113 @@ pub type GetDevice {
   )
 }
 
-pub fn get_device(id id: Int) {
-  let sql =
-    "SELECT id, user_id, name, platform, last_sync
-FROM devices
-WHERE id = ?1"
-  #(sql, [dev.ParamInt(id)], get_device_decoder())
-}
-
-pub fn get_device_decoder() -> decode.Decoder(GetDevice) {
-  use id <- decode.field(0, decode.int)
-  use user_id <- decode.field(1, decode.int)
-  use name <- decode.field(2, decode.string)
-  use platform <- decode.field(3, decode.string)
-  use last_sync <- decode.field(4, decode.string)
-  decode.success(GetDevice(id:, user_id:, name:, platform:, last_sync:))
-}
-
-pub type ListDevicesByUser {
-  ListDevicesByUser(
-    id: Int,
-    user_id: Int,
-    name: String,
-    platform: String,
-    last_sync: String,
-  )
-}
-
-pub fn list_devices_by_user(user_id user_id: Int) {
-  let sql =
-    "SELECT id, user_id, name, platform, last_sync
-FROM devices
-WHERE user_id = ?1
-ORDER BY name"
-  #(sql, [dev.ParamInt(user_id)], list_devices_by_user_decoder())
-}
-
-pub fn list_devices_by_user_decoder() -> decode.Decoder(ListDevicesByUser) {
-  use id <- decode.field(0, decode.int)
-  use user_id <- decode.field(1, decode.int)
-  use name <- decode.field(2, decode.string)
-  use platform <- decode.field(3, decode.string)
-  use last_sync <- decode.field(4, decode.string)
-  decode.success(ListDevicesByUser(id:, user_id:, name:, platform:, last_sync:))
-}
-
-pub fn update_device_last_sync(last_sync last_sync: String, id id: Int) {
+pub fn update_device(name name: String, platform platform: String, id id: Int) {
   let sql =
     "UPDATE devices
-SET last_sync = ?1
-WHERE id = ?2"
-  #(sql, [dev.ParamString(last_sync), dev.ParamInt(id)])
+SET name = ?1,
+    platform = ?2
+WHERE id = ?3
+RETURNING id, user_id, name, platform, last_sync"
+  #(
+    sql,
+    [dev.ParamString(name), dev.ParamString(platform), dev.ParamInt(id)],
+    update_device_decoder(),
+  )
+}
+
+pub fn update_device_decoder() -> decode.Decoder(UpdateDevice) {
+  use id <- decode.field(0, decode.int)
+  use user_id <- decode.field(1, decode.int)
+  use name <- decode.field(2, decode.string)
+  use platform <- decode.field(3, decode.string)
+  use last_sync <- decode.field(4, decode.string)
+  decode.success(UpdateDevice(id:, user_id:, name:, platform:, last_sync:))
+}
+
+pub fn touch_device_last_sync(id id: Int) {
+  let sql =
+    "UPDATE devices
+SET last_sync = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ?1"
+  #(sql, [dev.ParamInt(id)])
+}
+
+pub type DeleteDevice {
+  DeleteDevice(id: Int)
+}
+
+pub fn delete_device(id id: Int) {
+  let sql =
+    "DELETE FROM devices
+WHERE id = ?1
+RETURNING id"
+  #(sql, [dev.ParamInt(id)], delete_device_decoder())
+}
+
+pub fn delete_device_decoder() -> decode.Decoder(DeleteDevice) {
+  use id <- decode.field(0, decode.int)
+  decode.success(DeleteDevice(id:))
+}
+
+pub type ListLimitsByUser {
+  ListLimitsByUser(
+    id: Int,
+    user_id: Int,
+    app_id: Option(Int),
+    category_id: Option(Int),
+    daily_seconds: Int,
+  )
+}
+
+pub fn list_limits_by_user(user_id user_id: Int) {
+  let sql =
+    "SELECT id, user_id, app_id, category_id, daily_seconds
+FROM limits
+WHERE user_id = ?1
+ORDER BY id"
+  #(sql, [dev.ParamInt(user_id)], list_limits_by_user_decoder())
+}
+
+pub fn list_limits_by_user_decoder() -> decode.Decoder(ListLimitsByUser) {
+  use id <- decode.field(0, decode.int)
+  use user_id <- decode.field(1, decode.int)
+  use app_id <- decode.field(2, decode.optional(decode.int))
+  use category_id <- decode.field(3, decode.optional(decode.int))
+  use daily_seconds <- decode.field(4, decode.int)
+  decode.success(ListLimitsByUser(
+    id:,
+    user_id:,
+    app_id:,
+    category_id:,
+    daily_seconds:,
+  ))
+}
+
+pub type GetLimit {
+  GetLimit(
+    id: Int,
+    user_id: Int,
+    app_id: Option(Int),
+    category_id: Option(Int),
+    daily_seconds: Int,
+  )
+}
+
+pub fn get_limit(id id: Int) {
+  let sql =
+    "SELECT id, user_id, app_id, category_id, daily_seconds
+FROM limits
+WHERE id = ?1"
+  #(sql, [dev.ParamInt(id)], get_limit_decoder())
+}
+
+pub fn get_limit_decoder() -> decode.Decoder(GetLimit) {
+  use id <- decode.field(0, decode.int)
+  use user_id <- decode.field(1, decode.int)
+  use app_id <- decode.field(2, decode.optional(decode.int))
+  use category_id <- decode.field(3, decode.optional(decode.int))
+  use daily_seconds <- decode.field(4, decode.int)
+  decode.success(GetLimit(id:, user_id:, app_id:, category_id:, daily_seconds:))
 }
 
 pub type CreateLimit {
@@ -461,8 +779,8 @@ pub fn create_limit_decoder() -> decode.Decoder(CreateLimit) {
   ))
 }
 
-pub type ListLimitsByUser {
-  ListLimitsByUser(
+pub type UpdateLimit {
+  UpdateLimit(
     id: Int,
     user_id: Int,
     app_id: Option(Int),
@@ -471,21 +789,26 @@ pub type ListLimitsByUser {
   )
 }
 
-pub fn list_limits_by_user(user_id user_id: Int) {
+pub fn update_limit(daily_seconds daily_seconds: Int, id id: Int) {
   let sql =
-    "SELECT id, user_id, app_id, category_id, daily_seconds
-FROM limits
-WHERE user_id = ?1"
-  #(sql, [dev.ParamInt(user_id)], list_limits_by_user_decoder())
+    "UPDATE limits
+SET daily_seconds = ?1
+WHERE id = ?2
+RETURNING id, user_id, app_id, category_id, daily_seconds"
+  #(
+    sql,
+    [dev.ParamInt(daily_seconds), dev.ParamInt(id)],
+    update_limit_decoder(),
+  )
 }
 
-pub fn list_limits_by_user_decoder() -> decode.Decoder(ListLimitsByUser) {
+pub fn update_limit_decoder() -> decode.Decoder(UpdateLimit) {
   use id <- decode.field(0, decode.int)
   use user_id <- decode.field(1, decode.int)
   use app_id <- decode.field(2, decode.optional(decode.int))
   use category_id <- decode.field(3, decode.optional(decode.int))
   use daily_seconds <- decode.field(4, decode.int)
-  decode.success(ListLimitsByUser(
+  decode.success(UpdateLimit(
     id:,
     user_id:,
     app_id:,
@@ -494,11 +817,54 @@ pub fn list_limits_by_user_decoder() -> decode.Decoder(ListLimitsByUser) {
   ))
 }
 
-pub fn delete_limit(id id: Int, user_id user_id: Int) {
+pub type DeleteLimit {
+  DeleteLimit(id: Int)
+}
+
+pub fn delete_limit(id id: Int) {
   let sql =
     "DELETE FROM limits
-WHERE id = ?1 AND user_id = ?2"
-  #(sql, [dev.ParamInt(id), dev.ParamInt(user_id)])
+WHERE id = ?1
+RETURNING id"
+  #(sql, [dev.ParamInt(id)], delete_limit_decoder())
+}
+
+pub fn delete_limit_decoder() -> decode.Decoder(DeleteLimit) {
+  use id <- decode.field(0, decode.int)
+  decode.success(DeleteLimit(id:))
+}
+
+pub type ListScreenEventsByDevice {
+  ListScreenEventsByDevice(id: Int, device_id: Int, ts: Int, type_: String)
+}
+
+pub fn list_screen_events_by_device(
+  device_id device_id: Int,
+  from_ts from_ts: Int,
+  to_ts to_ts: Int,
+) {
+  let sql =
+    "SELECT id, device_id, ts, type
+FROM screen_events
+WHERE device_id = ?1
+  AND ts >= ?2
+  AND ts < ?3
+ORDER BY ts"
+  #(
+    sql,
+    [dev.ParamInt(device_id), dev.ParamInt(from_ts), dev.ParamInt(to_ts)],
+    list_screen_events_by_device_decoder(),
+  )
+}
+
+pub fn list_screen_events_by_device_decoder() -> decode.Decoder(
+  ListScreenEventsByDevice,
+) {
+  use id <- decode.field(0, decode.int)
+  use device_id <- decode.field(1, decode.int)
+  use ts <- decode.field(2, decode.int)
+  use type_ <- decode.field(3, decode.string)
+  decode.success(ListScreenEventsByDevice(id:, device_id:, ts:, type_:))
 }
 
 pub type CreateScreenEvent {
@@ -529,42 +895,61 @@ pub fn create_screen_event_decoder() -> decode.Decoder(CreateScreenEvent) {
   decode.success(CreateScreenEvent(id:, device_id:, ts:, type_:))
 }
 
-pub type ListScreenEventsByDeviceAndDay {
-  ListScreenEventsByDeviceAndDay(
-    id: Int,
-    device_id: Int,
-    ts: Int,
-    type_: String,
-  )
+pub type DeleteScreenEvent {
+  DeleteScreenEvent(id: Int)
 }
 
-pub fn list_screen_events_by_device_and_day(
-  device_id device_id: Int,
-  day_start day_start: Int,
-  day_end day_end: Int,
-) {
+pub fn delete_screen_event(id id: Int) {
   let sql =
-    "SELECT id, device_id, ts, type
-FROM screen_events
-WHERE device_id = ?1
-  AND ts >= ?2
-  AND ts < ?3
-ORDER BY ts"
-  #(
-    sql,
-    [dev.ParamInt(device_id), dev.ParamInt(day_start), dev.ParamInt(day_end)],
-    list_screen_events_by_device_and_day_decoder(),
-  )
+    "DELETE FROM screen_events
+WHERE id = ?1
+RETURNING id"
+  #(sql, [dev.ParamInt(id)], delete_screen_event_decoder())
 }
 
-pub fn list_screen_events_by_device_and_day_decoder() -> decode.Decoder(
-  ListScreenEventsByDeviceAndDay,
-) {
+pub fn delete_screen_event_decoder() -> decode.Decoder(DeleteScreenEvent) {
   use id <- decode.field(0, decode.int)
-  use device_id <- decode.field(1, decode.int)
-  use ts <- decode.field(2, decode.int)
-  use type_ <- decode.field(3, decode.string)
-  decode.success(ListScreenEventsByDeviceAndDay(id:, device_id:, ts:, type_:))
+  decode.success(DeleteScreenEvent(id:))
+}
+
+pub type ListUsers {
+  ListUsers(id: Int, name: String, created_at: String, updated_at: String)
+}
+
+pub fn list_users() {
+  let sql =
+    "SELECT id, name, created_at, updated_at
+FROM users
+ORDER BY id"
+  #(sql, [], list_users_decoder())
+}
+
+pub fn list_users_decoder() -> decode.Decoder(ListUsers) {
+  use id <- decode.field(0, decode.int)
+  use name <- decode.field(1, decode.string)
+  use created_at <- decode.field(2, decode.string)
+  use updated_at <- decode.field(3, decode.string)
+  decode.success(ListUsers(id:, name:, created_at:, updated_at:))
+}
+
+pub type GetUser {
+  GetUser(id: Int, name: String, created_at: String, updated_at: String)
+}
+
+pub fn get_user(id id: Int) {
+  let sql =
+    "SELECT id, name, created_at, updated_at
+FROM users
+WHERE id = ?1"
+  #(sql, [dev.ParamInt(id)], get_user_decoder())
+}
+
+pub fn get_user_decoder() -> decode.Decoder(GetUser) {
+  use id <- decode.field(0, decode.int)
+  use name <- decode.field(1, decode.string)
+  use created_at <- decode.field(2, decode.string)
+  use updated_at <- decode.field(3, decode.string)
+  decode.success(GetUser(id:, name:, created_at:, updated_at:))
 }
 
 pub type CreateUser {
@@ -587,22 +972,41 @@ pub fn create_user_decoder() -> decode.Decoder(CreateUser) {
   decode.success(CreateUser(id:, name:, created_at:, updated_at:))
 }
 
-pub type GetUser {
-  GetUser(id: Int, name: String, created_at: String, updated_at: String)
+pub type UpdateUser {
+  UpdateUser(id: Int, name: String, created_at: String, updated_at: String)
 }
 
-pub fn get_user(id id: Int) {
+pub fn update_user(name name: String, id id: Int) {
   let sql =
-    "SELECT id, name, created_at, updated_at
-FROM users
-WHERE id = ?1"
-  #(sql, [dev.ParamInt(id)], get_user_decoder())
+    "UPDATE users
+SET name = ?1,
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = ?2
+RETURNING id, name, created_at, updated_at"
+  #(sql, [dev.ParamString(name), dev.ParamInt(id)], update_user_decoder())
 }
 
-pub fn get_user_decoder() -> decode.Decoder(GetUser) {
+pub fn update_user_decoder() -> decode.Decoder(UpdateUser) {
   use id <- decode.field(0, decode.int)
   use name <- decode.field(1, decode.string)
   use created_at <- decode.field(2, decode.string)
   use updated_at <- decode.field(3, decode.string)
-  decode.success(GetUser(id:, name:, created_at:, updated_at:))
+  decode.success(UpdateUser(id:, name:, created_at:, updated_at:))
+}
+
+pub type DeleteUser {
+  DeleteUser(id: Int)
+}
+
+pub fn delete_user(id id: Int) {
+  let sql =
+    "DELETE FROM users
+WHERE id = ?1
+RETURNING id"
+  #(sql, [dev.ParamInt(id)], delete_user_decoder())
+}
+
+pub fn delete_user_decoder() -> decode.Decoder(DeleteUser) {
+  use id <- decode.field(0, decode.int)
+  decode.success(DeleteUser(id:))
 }

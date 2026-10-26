@@ -75,6 +75,16 @@
               nodejs
             ];
           })
+          (jailed-agents.lib.${system}.makeJailedClaudeCode {
+            extraPkgs = with pkgs; [
+              gleam
+              beam28Packages.erlang
+              sqlite
+              python3
+              nodejs
+            ];
+            extraReadwriteDirs = [ "~/.claude" ];
+          })
 
         ]
         ++ scriptPackages;

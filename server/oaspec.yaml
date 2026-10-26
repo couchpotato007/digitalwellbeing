@@ -1,0 +1,6 @@
+# Run from the server/ directory: oaspec generate --config=oaspec.yaml
+input: priv/openapi.yaml
+package: api
+mode: server
+output:
+  dir: ./src
