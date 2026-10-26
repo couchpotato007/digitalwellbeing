@@ -74,6 +74,9 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -211,7 +214,7 @@ private fun TimelineContent(
         ) {
             // rows of a device are one device, rows of a day the devices picked
             val device = if (strips[page].date.isEmpty()) strips[page].label else report.device
-            TimelinePage(server, device, strips[page], report.categoryOrder, colors, zoom, onOpenDay)
+            TimelinePage(server, device, strips[page], report.categoryOrder, report.deviceOs, colors, zoom, onOpenDay)
         }
     }
 }
@@ -222,16 +225,22 @@ private fun TimelinePage(
     device: String,
     strip: Strip,
     order: List<String>,
+    deviceOs: Map<String, String>,
     colors: Map<String, Color>,
     zoom: Zoom,
     onOpenDay: (String) -> Unit,
 ) {
-    // index into strip.segments of the block whose sheet is open
-    var selected by remember(strip) { mutableStateOf<Int?>(null) }
+    // a column per device, so a day of all devices keeps them apart
+    val lanes = strip.segments.map { it.device }.distinct().sorted()
+    // blocks closer than a few dp are one, too small to tell apart anyway
+    val blocks = blocks(strip.segments, (GAP_DP / zoom.hourDp * HOUR_MS).toLong())
+    // the block whose sheet is open
+    var selected by remember(strip) { mutableStateOf<Segment?>(null) }
     val dim by animateFloatAsState(if (selected == null) 0f else 1f, tween(250), label = "dim")
     // blocks grow in from the left when the page is first shown
     val reveal = remember(strip) { Animatable(0f) }
     LaunchedEffect(strip) { reveal.animateTo(1f, tween(700, easing = FastOutSlowInEasing)) }
+    val haptics = LocalHapticFeedback.current
 
     val scroll = rememberScrollState()
     val density = LocalDensity.current
@@ -245,12 +254,30 @@ private fun TimelinePage(
     }
     // the picked block moves to the top, above the sheet
     LaunchedEffect(selected) {
-        val segment = selected?.let { strip.segments[it] } ?: return@LaunchedEffect
-        scroll.animateScrollTo(scrollTo(segment.startMs), tween(400))
+        val block = selected ?: return@LaunchedEffect
+        scroll.animateScrollTo(scrollTo(block.startMs), tween(400))
     }
 
     Column(Modifier.fillMaxSize()) {
         PageSummary(strip, order, colors, reveal.value, onOpenDay)
+
+        if (lanes.size > 1) {
+            Row(Modifier.padding(start = GUTTER_DP.dp, end = 16.dp, bottom = 4.dp)) {
+                lanes.forEach { lane ->
+                    Column(Modifier.weight(1f).padding(horizontal = 2.dp)) {
+                        Text(lane, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        deviceOs[lane]?.let {
+                            Text(
+                                osName(it),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+            }
+        }
 
         Box(
             Modifier
@@ -265,24 +292,52 @@ private fun TimelinePage(
                 }
                 .verticalScroll(scroll)
         ) {
-            DayCanvas(strip, colors, zoom.hourDp, selected?.let { strip.segments[it] }, dim, reveal.value) { tapped ->
-                selected = tapped?.let { strip.segments.indexOf(it) }
+            DayCanvas(strip, lanes, blocks, colors, zoom.hourDp, selected, dim, reveal.value) { tapped ->
+                if (tapped != null) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                selected = tapped
             }
         }
     }
 
-    selected?.let { index ->
+    selected?.let { block ->
+        // the arrows step through the blocks of the same device
+        val sameDevice = blocks.filter { it.device == block.device }
         BlockSheet(
             server,
-            device,
+            block.device.ifEmpty { device },
             strip,
-            index,
+            sameDevice,
+            sameDevice.indexOf(block).coerceAtLeast(0),
             colors,
-            onSelect = { selected = it },
+            onSelect = { selected = sameDevice[it] },
             onDismiss = { selected = null },
         )
     }
 }
+
+/** Left of the lanes, for the hour labels. */
+private const val GUTTER_DP = 60
+
+/** Blocks of a device and category less than this apart are drawn as one. */
+private const val GAP_DP = 6f
+
+/** Taps this close to a block still hit it. */
+private const val TOUCH_DP = 24
+
+/** Segments of the same device and category closer than [gapMs] merged, sorted by start. */
+private fun blocks(segments: List<Segment>, gapMs: Long): List<Segment> =
+    segments.groupBy { it.device }.values.flatMap { group ->
+        val merged = mutableListOf<Segment>()
+        group.sortedBy { it.startMs }.forEach { s ->
+            val last = merged.lastOrNull()
+            if (last != null && last.category == s.category && s.startMs <= last.endMs + gapMs) {
+                merged[merged.lastIndex] = last.copy(endMs = maxOf(last.endMs, s.endMs))
+            } else {
+                merged.add(s)
+            }
+        }
+        merged
+    }.sortedBy { it.startMs }
 
 /** Active time, first and last activity, and the share of each category as one bar. */
 @Composable
@@ -344,10 +399,12 @@ private fun PageSummary(
     }
 }
 
-/** The day from top to bottom, hour lines on the left, a block per segment. */
+/** The day from top to bottom, hour lines on the left, a lane of blocks per device. */
 @Composable
 private fun DayCanvas(
     strip: Strip,
+    lanes: List<String>,
+    blocks: List<Segment>,
     colors: Map<String, Color>,
     hourDp: Float,
     selected: Segment?,
@@ -370,87 +427,113 @@ private fun DayCanvas(
         Modifier
             .fillMaxWidth()
             .height((hourDp * hours).dp + 16.dp)
-            .pointerInput(strip, hourDp) {
+            .pointerInput(strip, lanes, blocks, hourDp) {
                 detectTapGestures { offset ->
-                    val top = 8.dp.toPx()
-                    val msPerPx = length / (size.height - 2 * top)
-                    val at = strip.startMs + ((offset.y - top) * msPerPx).toLong()
-                    // short segments are hard to hit, so a few dp around count
-                    val slack = (8.dp.toPx() * msPerPx).toLong()
-                    onTap(
-                        strip.segments.firstOrNull { at in it.startMs until it.endMs }
-                            ?: strip.segments
-                                .filter { at in it.startMs - slack until it.endMs + slack }
-                                .minByOrNull { minOf(abs(at - it.startMs), abs(at - it.endMs)) }
-                    )
+                    val geometry = Geometry(this, size.width.toFloat(), size.height.toFloat(), strip, lanes.size)
+                    val lane = geometry.laneAt(offset.x)
+                    // the nearest block of the lane, a short one needn't be hit exactly
+                    val nearest = blocks
+                        .filter { lanes.indexOf(it.device) == lane }
+                        .map { block ->
+                            val top = geometry.y(block.startMs)
+                            val bottom = top + geometry.height(block)
+                            block to when {
+                                offset.y < top -> top - offset.y
+                                offset.y > bottom -> offset.y - bottom
+                                else -> 0f
+                            }
+                        }
+                        .minByOrNull { it.second }
+                    onTap(nearest?.takeIf { it.second <= TOUCH_DP.dp.toPx() }?.first)
                 }
             }
     ) {
-        val top = 8.dp.toPx()
-        val height = size.height - 2 * top
-        val gutter = 52.dp.toPx()
-        val right = size.width - 16.dp.toPx()
-        val y = { ms: Long -> top + height * (ms - strip.startMs) / length }
+        val geometry = Geometry(this, size.width, size.height, strip, lanes.size)
 
         // an hour line with label every hour, or every 3 when zoomed out
         val every = if (hourDp >= 36f) 1 else 3
         for (hour in 0..hours.toInt()) {
-            val lineY = top + height * hour / hours
+            val lineY = geometry.y(strip.startMs + hour * HOUR_MS)
             if (hour % every == 0) {
                 val label = measurer.measure("%02d:00".format(hour % 24), labelStyle)
                 drawText(label, topLeft = Offset(12.dp.toPx(), lineY - label.size.height / 2))
             }
-            drawLine(line, Offset(gutter, lineY), Offset(right, lineY), strokeWidth = 1.dp.toPx())
+            drawLine(line, Offset(geometry.gutter, lineY), Offset(geometry.right, lineY), strokeWidth = 1.dp.toPx())
             if (hourDp >= 120f && hour < hours.toInt()) {
-                val half = lineY + height / hours / 2
-                drawLine(line.copy(alpha = 0.4f), Offset(gutter, half), Offset(right, half), strokeWidth = 1.dp.toPx())
+                val half = geometry.y(strip.startMs + hour * HOUR_MS + HOUR_MS / 2)
+                drawLine(
+                    line.copy(alpha = 0.4f),
+                    Offset(geometry.gutter, half),
+                    Offset(geometry.right, half),
+                    strokeWidth = 1.dp.toPx(),
+                )
             }
         }
 
-        val left = gutter + 8.dp.toPx()
-        val fullWidth = (right - left) * reveal
-        strip.segments.forEach { s ->
-            val isSelected = s == selected
-            val color = colors[s.category] ?: Color.Gray
-            val y0 = y(s.startMs)
-            val h = (y(s.endMs) - y0).coerceAtLeast(2.dp.toPx())
+        val width = (geometry.laneWidth - 4.dp.toPx()) * reveal
+        blocks.forEach { block ->
+            val isSelected = block == selected
+            val color = colors[block.category] ?: Color.Gray
+            val left = geometry.laneLeft(lanes.indexOf(block.device)) + 2.dp.toPx()
+            val y0 = geometry.y(block.startMs)
+            val h = geometry.height(block)
             // the selected block steps out a bit, the others fade
-            val grow = if (isSelected) 4.dp.toPx() * dim else 0f
+            val grow = if (isSelected) 3.dp.toPx() * dim else 0f
             drawRoundRect(
                 color.copy(alpha = if (isSelected) 1f else 1f - 0.6f * dim),
-                topLeft = Offset(left - grow, y0),
-                size = Size(fullWidth + 2 * grow, h),
+                topLeft = Offset(left - grow, y0 - grow),
+                size = Size(width + 2 * grow, h + 2 * grow),
                 cornerRadius = CornerRadius(4.dp.toPx()),
             )
             if (isSelected) {
                 drawRoundRect(
                     outline,
-                    topLeft = Offset(left - grow, y0),
-                    size = Size(fullWidth + 2 * grow, h),
+                    topLeft = Offset(left - grow, y0 - grow),
+                    size = Size(width + 2 * grow, h + 2 * grow),
                     cornerRadius = CornerRadius(4.dp.toPx()),
                     style = Stroke(2.dp.toPx()),
                 )
             }
             // names in blocks that have room for them
-            if (h >= 20.dp.toPx() && fullWidth > 48.dp.toPx()) {
-                val text = s.category + "  " + clock(s.startMs - strip.startMs) + "–" + clock(s.endMs - strip.startMs)
+            if (h >= 20.dp.toPx() && width > 48.dp.toPx()) {
+                val text = block.category + "  " + clock(block.startMs - strip.startMs) + "–" +
+                    clock(block.endMs - strip.startMs)
                 val layout = measurer.measure(
                     text,
                     blockStyle,
                     overflow = TextOverflow.Ellipsis,
                     maxLines = 1,
-                    constraints = Constraints(maxWidth = (fullWidth - 12.dp.toPx()).toInt().coerceAtLeast(0)),
+                    constraints = Constraints(maxWidth = (width - 12.dp.toPx()).toInt().coerceAtLeast(0)),
                 )
                 drawText(layout, topLeft = Offset(left + 6.dp.toPx(), y0 + 3.dp.toPx()))
             }
         }
 
         if (now in strip.startMs until strip.endMs) {
-            val nowY = y(now)
-            drawLine(nowColor, Offset(gutter, nowY), Offset(right, nowY), strokeWidth = 2.dp.toPx())
-            drawCircle(nowColor, 4.dp.toPx(), Offset(gutter, nowY))
+            val nowY = geometry.y(now)
+            drawLine(nowColor, Offset(geometry.gutter, nowY), Offset(geometry.right, nowY), strokeWidth = 2.dp.toPx())
+            drawCircle(nowColor, 4.dp.toPx(), Offset(geometry.gutter, nowY))
         }
     }
+}
+
+/** Where things go on the canvas, the same for drawing and for taps. */
+private class Geometry(density: Density, width: Float, height: Float, private val strip: Strip, private val lanes: Int) {
+    private val top = with(density) { 8.dp.toPx() }
+    private val inner = height - 2 * top
+    private val minHeight = with(density) { 4.dp.toPx() }
+    private val length = (strip.endMs - strip.startMs).coerceAtLeast(1).toFloat()
+    val gutter = with(density) { GUTTER_DP.dp.toPx() }
+    val right = width - with(density) { 16.dp.toPx() }
+    val laneWidth = (right - gutter) / lanes.coerceAtLeast(1)
+
+    fun y(ms: Long) = top + inner * (ms - strip.startMs) / length
+
+    fun height(block: Segment) = (y(block.endMs) - y(block.startMs)).coerceAtLeast(minHeight)
+
+    fun laneLeft(lane: Int) = gutter + lane * laneWidth
+
+    fun laneAt(x: Float) = ((x - gutter) / laneWidth).toInt().coerceIn(0, (lanes - 1).coerceAtLeast(0))
 }
 
 /**
@@ -463,12 +546,13 @@ private fun BlockSheet(
     server: Server,
     device: String,
     strip: Strip,
+    blocks: List<Segment>,
     index: Int,
     colors: Map<String, Color>,
     onSelect: (Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val segment = strip.segments[index]
+    val segment = blocks[index]
     val color = colors[segment.category] ?: Color.Gray
     var usage by remember(segment) { mutableStateOf<BlockUsage?>(null) }
     var error by remember(segment) { mutableStateOf<String?>(null) }
@@ -492,6 +576,9 @@ private fun BlockSheet(
                 Box(Modifier.size(width = 6.dp, height = 40.dp).clip(RoundedCornerShape(3.dp)).background(color))
                 Column(Modifier.weight(1f).padding(start = 12.dp)) {
                     Text(segment.category, style = MaterialTheme.typography.titleLarge)
+                    if (device.isNotEmpty()) {
+                        Text(device, style = MaterialTheme.typography.labelMedium, color = color)
+                    }
                     Text(
                         clock(segment.startMs - strip.startMs) + " – " + clock(segment.endMs - strip.startMs) +
                             " · " + formatDuration(segment.endMs - segment.startMs),
@@ -502,7 +589,7 @@ private fun BlockSheet(
                 TextButton(enabled = index > 0, onClick = { onSelect(index - 1) }) {
                     Text("‹", style = MaterialTheme.typography.titleLarge)
                 }
-                TextButton(enabled = index < strip.segments.lastIndex, onClick = { onSelect(index + 1) }) {
+                TextButton(enabled = index < blocks.lastIndex, onClick = { onSelect(index + 1) }) {
                     Text("›", style = MaterialTheme.typography.titleLarge)
                 }
             }

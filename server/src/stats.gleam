@@ -72,8 +72,9 @@ pub type Strip {
   )
 }
 
+/// What `device` used from `start_ms` to `end_ms`.
 pub type Segment {
-  Segment(start_ms: Int, end_ms: Int, category: String)
+  Segment(start_ms: Int, end_ms: Int, device: String, category: String)
 }
 
 pub fn load(
@@ -281,22 +282,27 @@ fn strips(
   }
 }
 
-/// `stretches` in the reverse order of list.group, cut to the day.
+/// `stretches` in the reverse order of list.group, cut to the day. Only
+/// stretches of the same device are merged, sorted by start.
 fn segments(stretches: List(Stretch), day: Day) -> List(Segment) {
-  stretches
-  |> list.sort(fn(a, b) { int.compare(a.start_ms, b.start_ms) })
-  |> list.fold([], fn(merged: List(Segment), s) {
-    let start = int.max(s.start_ms, day.start_ms)
-    let end = int.min(s.end_ms, day.end_ms)
-    case merged {
-      _ if end <= start -> merged
-      [last, ..rest]
-        if last.category == s.category && start <= last.end_ms + segment_gap_ms
-      -> [Segment(..last, end_ms: int.max(last.end_ms, end)), ..rest]
-      _ -> [Segment(start, end, s.category), ..merged]
-    }
+  list.group(stretches, fn(s) { s.device })
+  |> dict.values
+  |> list.flat_map(fn(group) {
+    group
+    |> list.sort(fn(a, b) { int.compare(a.start_ms, b.start_ms) })
+    |> list.fold([], fn(merged: List(Segment), s) {
+      let start = int.max(s.start_ms, day.start_ms)
+      let end = int.min(s.end_ms, day.end_ms)
+      case merged {
+        _ if end <= start -> merged
+        [last, ..rest]
+          if last.category == s.category && start <= last.end_ms + segment_gap_ms
+        -> [Segment(..last, end_ms: int.max(last.end_ms, end)), ..rest]
+        _ -> [Segment(start, end, s.device, s.category), ..merged]
+      }
+    })
   })
-  |> list.reverse
+  |> list.sort(fn(a, b) { int.compare(a.start_ms, b.start_ms) })
 }
 
 /// Top-level categories in the order their first rule has.
@@ -374,6 +380,7 @@ pub fn to_json(report: Report) -> Json {
               json.object([
                 #("start_ms", json.int(segment.start_ms)),
                 #("end_ms", json.int(segment.end_ms)),
+                #("device", json.string(segment.device)),
                 #("category", json.string(segment.category)),
               ])
             }),

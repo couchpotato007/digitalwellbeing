@@ -47,7 +47,8 @@ data class BlockUsage(val apps: List<UsageItem>, val titles: List<UsageItem>)
 /** A row of the activity view. [date] is set for rows of a day, empty for rows of a device. */
 data class Strip(val label: String, val date: String, val startMs: Long, val endMs: Long, val segments: List<Segment>)
 
-data class Segment(val startMs: Long, val endMs: Long, val category: String)
+/** [device] is "" from servers before segments had one. */
+data class Segment(val startMs: Long, val endMs: Long, val device: String, val category: String)
 
 object Stats {
     /** [date] "" is today, [device] "" is all devices. */
@@ -91,7 +92,7 @@ object Stats {
                 s.getLong("start_ms"),
                 s.getLong("end_ms"),
                 s.getJSONArray("segments").objects().map {
-                    Segment(it.getLong("start_ms"), it.getLong("end_ms"), it.getString("category"))
+                    Segment(it.getLong("start_ms"), it.getLong("end_ms"), it.optString("device"), it.getString("category"))
                 },
             )
         },

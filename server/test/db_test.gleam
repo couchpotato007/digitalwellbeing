@@ -122,7 +122,8 @@ pub fn dashboard_queries_test() {
   // one strip per device
   let assert [desktop, laptop] = report.strips
   assert desktop.label == "desktop" && laptop.label == "laptop"
-  let assert [stats.Segment(_, _, "Work > Programming")] = laptop.segments
+  let assert [stats.Segment(_, _, "laptop", "Work > Programming")] =
+    laptop.segments
 
   let assert Ok(week) = db.filter(conn, today.date, 7, "laptop")
   let assert Ok(report) = stats.load(conn, week)
@@ -130,6 +131,13 @@ pub fn dashboard_queries_test() {
   assert report.total_ms == 60_000
   // one strip per day
   assert list.length(report.strips) == 7
+
+  // a day of all devices keeps the devices apart, even in one category
+  let assert Ok(week) = db.filter(conn, today.date, 7, "")
+  let assert Ok(report) = stats.load(conn, week)
+  let assert Ok(last) = list.last(report.strips)
+  let assert [first, second] = last.segments
+  assert first.device == "laptop" && second.device == "desktop"
 
   // the day before has nothing, the week before neither
   let assert Ok(yesterday) = db.filter(conn, today.previous_date, 1, "")

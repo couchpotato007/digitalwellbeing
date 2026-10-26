@@ -381,7 +381,12 @@ fn activity(
                 style("left", percent(from, length)),
                 style("width", percent(to - from, length)),
                 attribute.title(
-                  segment.category
+                  // rows of a day have all devices
+                  case strip.date {
+                    "" -> ""
+                    _ -> segment.device <> " · "
+                  }
+                  <> segment.category
                   <> " · "
                   <> clock(from)
                   <> "–"
