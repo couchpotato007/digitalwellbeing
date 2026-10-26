@@ -121,6 +121,28 @@ Manager: `SERVER_URL=… TOKEN=… DEVICE=… nix run github:<you>/digitalwellbe
   and AFK watchers. Time away from the computer is cut out. On Wayland, the
   window watcher needs a compositor-specific watcher (e.g. `awatcher`).
   On Linux, run the agent as a systemd user service.
+- **Android**: Use the app in `android/` instead of ActivityWatch and the agent,
+  see below.
 - **iOS**: Not supported. iOS Screen Time has no API that lets apps export usage data.
 
 On the first sync the agent uploads the last 30 days.
+
+### Android
+
+`android/` is a small Kotlin app that does the agent's job on a phone. It reads
+Android's usage events (which app was in the foreground, cut off when the screen
+turns off) and uploads them every 15 minutes with the same API. The app name is
+sent as `app` and the package name (e.g. `org.mozilla.firefox`) as `title`, so
+category regexes can match either. Browser tabs are not tracked.
+
+Build it with Android Studio, or with JDK 17 and the Android SDK:
+
+```sh
+cd android
+gradle wrapper   # once, creates ./gradlew
+./gradlew assembleRelease   # app/build/outputs/apk/release/app-release.apk
+```
+
+In the app, grant usage access, then add the server URL, `ADMIN_TOKEN` and a
+device name. Android keeps usage events only for about a week, so the first sync
+uploads less than 30 days.

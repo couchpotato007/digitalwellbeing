@@ -209,6 +209,14 @@ pub fn recategorize(
   }
 }
 
+/// Deletes everything `device` sent.
+pub fn delete_device(
+  conn: Connection,
+  device: String,
+) -> Result(Nil, sqlight.Error) {
+  exec(conn, sql.delete_device(device:))
+}
+
 /// All devices that ever sent something.
 pub fn device_names(conn: Connection) -> Result(List(String), sqlight.Error) {
   query(conn, sql.device_names())

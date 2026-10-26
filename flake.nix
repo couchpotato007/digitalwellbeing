@@ -21,7 +21,13 @@
       ];
 
       system = "x86_64-linux";
-      pkgs = import nixpkgs { inherit system; };
+      pkgs = import nixpkgs {
+        inherit system;
+        config = {
+          allowUnfree = true;
+          android_sdk.accept_license = true;
+        };
+      };
 
       myScripts = {
 
@@ -53,6 +59,12 @@
       };
 
       scriptPackages = pkgs.lib.mapAttrsToList (name: body: pkgs.writeShellScriptBin name body) myScripts;
+
+      androidSdk =
+        (pkgs.androidenv.composeAndroidPackages {
+          platformVersions = [ "35" ];
+          buildToolsVersions = [ "35.0.0" ];
+        }).androidsdk;
 
       buildInputs =
         with pkgs;
@@ -99,9 +111,18 @@
               sqlite
               python3
               nodejs
+              jdk17
+              gradle
+              androidSdk
+              android-tools
             ];
             extraReadwriteDirs = [ "~/.claude" ];
           })
+
+          jdk17
+          gradle
+          androidSdk
+          android-tools
 
         ]
         ++ scriptPackages;
@@ -121,6 +142,11 @@
 
         LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath buildInputs}";
         ESQLITE_USE_SYSTEM_SQLITE = 1;
+
+        ANDROID_HOME = "${androidSdk}/libexec/android-sdk";
+        JAVA_HOME = "${pkgs.jdk17}";
+        # Gradle otherwise downloads its own aapt2, which doesn't run on NixOS
+        GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${androidSdk}/libexec/android-sdk/build-tools/35.0.0/aapt2";
 
         shellHook = ''
           export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"

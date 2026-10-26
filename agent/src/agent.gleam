@@ -87,7 +87,8 @@ fn load_config() -> Result(Config, String) {
 }
 
 fn sync(cfg: Config) -> Result(Int, String) {
-  let device_url = cfg.server <> "/api/devices/" <> cfg.device
+  let device_url =
+    cfg.server <> "/api/devices/" <> uri.percent_encode(cfg.device)
   use cursor <- result.try(
     get(device_url <> "/cursor", cfg.token, {
       use ms <- decode.field("cursor_ms", decode.int)
@@ -169,10 +170,7 @@ fn query_activitywatch(
       "Unexpected ActivityWatch response: " <> string.inspect(err)
     })
   }
-  use windows <- result.try(run(
-    shared.Window,
-    "RETURN = window;",
-  ))
+  use windows <- result.try(run(shared.Window, "RETURN = window;"))
   use tabs <- result.map(
     list.try_map(find("web.tab.current"), fn(web) {
       run(

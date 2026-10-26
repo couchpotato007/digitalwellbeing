@@ -118,7 +118,26 @@ pub fn page(
       [class("grid")],
       list.map(sections, fn(section) { usage_list(section.0, section.1) }),
     ),
+    case filter.device {
+      "" -> element.none()
+      device -> delete_device_form(device)
+    },
   ])
+}
+
+/// Deletes all data of `device`, after the browser asks to confirm.
+fn delete_device_form(device: String) -> Element(msg) {
+  html.form(
+    [
+      attribute.method("post"),
+      attribute.action("/devices/" <> uri.percent_encode(device) <> "/delete"),
+      attribute.attribute(
+        "onsubmit",
+        "return confirm('Delete all data of this device? It cannot be undone.')",
+      ),
+    ],
+    [html.button([], [text("Delete " <> device <> " and its data")])],
+  )
 }
 
 fn document(title: String, children: List(Element(msg))) -> String {

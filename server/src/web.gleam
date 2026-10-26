@@ -33,10 +33,19 @@ pub fn handle_request(req: wisp.Request, ctx: Context) -> wisp.Response {
     http.Post, ["categories"] -> save_category(req, ctx)
     http.Post, ["categories", "defaults"] -> add_defaults(req, ctx)
     http.Post, ["categories", id, "delete"] -> delete_category(req, ctx, id)
-    http.Get, ["api", "devices", device, "cursor"] -> cursor(ctx, device)
-    http.Post, ["api", "devices", device, "events"] -> ingest(req, ctx, device)
+    http.Post, ["devices", device, "delete"] ->
+      delete_device(req, ctx, decode_segment(device))
+    http.Get, ["api", "devices", device, "cursor"] ->
+      cursor(ctx, decode_segment(device))
+    http.Post, ["api", "devices", device, "events"] ->
+      ingest(req, ctx, decode_segment(device))
     _, _ -> wisp.not_found()
   }
+}
+
+/// Path segments arrive percent-encoded, "Pixel%2010" is the device "Pixel 10".
+fn decode_segment(segment: String) -> String {
+  uri.percent_decode(segment) |> result.unwrap(segment)
 }
 
 /// Agents send `Authorization: Bearer <token>`, browsers get a basic auth
@@ -178,6 +187,18 @@ fn save_category(req: wisp.Request, ctx: Context) -> wisp.Response {
       let id = field("id") |> int.parse |> option.from_result
       rules_changed(ctx, db.save_rule(ctx.db, id, rule))
     }
+  }
+}
+
+fn delete_device(
+  req: wisp.Request,
+  ctx: Context,
+  device: String,
+) -> wisp.Response {
+  use _req <- wisp.csrf_known_header_protection(req)
+  case db.delete_device(ctx.db, device) {
+    Ok(Nil) -> wisp.redirect("/")
+    Error(err) -> db_error(err)
   }
 }
 

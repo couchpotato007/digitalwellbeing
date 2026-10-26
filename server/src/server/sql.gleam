@@ -379,3 +379,10 @@ pub fn device_names_decoder() -> decode.Decoder(DeviceNames) {
   use device <- decode.field(0, decode.string)
   decode.success(DeviceNames(device:))
 }
+
+pub fn delete_device(device device: String) {
+  let sql =
+    "DELETE FROM events
+WHERE device = ?1"
+  #(sql, [dev.ParamString(device)])
+}

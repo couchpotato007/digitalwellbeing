@@ -27,3 +27,7 @@ WHERE device = sqlc.arg(device) AND app = sqlc.arg(app) AND title = sqlc.arg(tit
 SELECT DISTINCT device
 FROM events
 ORDER BY device;
+
+-- name: DeleteDevice :exec
+DELETE FROM events
+WHERE device = sqlc.arg(device);
