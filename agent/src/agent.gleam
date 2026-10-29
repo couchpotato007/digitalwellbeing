@@ -14,7 +14,7 @@ import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleam/time/calendar
@@ -116,7 +116,7 @@ fn sync(cfg: Config) -> Result(Int, String) {
     now,
   ))
   let body =
-    shared.upload_to_json(shared.Upload(from_ms:, os: cfg.os, events:))
+    shared.upload_to_json(shared.Upload(from_ms:, os: cfg.os, events:, app_types: []))
     |> json.to_string
   use _ <- result.map(send(http.Post, device_url <> "/events", cfg.token, body))
   list.length(events)
@@ -208,11 +208,10 @@ fn aw_event_decoder(kind: shared.Kind) -> decode.Decoder(Event) {
     decode.one_of(decode.float, [decode.int |> decode.map(int.to_float)]),
   )
   use app <- decode.then(case kind {
-    shared.Window ->
-      decode.optionally_at(["data", "app"], "unknown", decode.string)
     shared.Web ->
       decode.optionally_at(["data", "url"], "", decode.string)
       |> decode.map(domain)
+    _ -> decode.optionally_at(["data", "app"], "unknown", decode.string)
   })
   use title <- decode.then(decode.optionally_at(
     ["data", "title"],
@@ -227,10 +226,17 @@ fn aw_event_decoder(kind: shared.Kind) -> decode.Decoder(Event) {
         duration_ms: float.round(seconds *. 1000.0),
         app:,
         title:,
+        tz_offset_min: Some(local_offset_min()),
       ))
     Error(Nil) ->
-      decode.failure(Event(kind, 0, 0, "", ""), "RFC 3339 timestamp")
+      decode.failure(Event(kind, 0, 0, "", "", None), "RFC 3339 timestamp")
   }
+}
+
+/// The UTC offset now. Events are at most a few minutes old, except on the
+/// first sync, so it is the one they happened in unless the clocks changed.
+fn local_offset_min() -> Int {
+  float.round(duration.to_seconds(calendar.local_offset())) / 60
 }
 
 /// "https://www.example.org/path" -> "example.org"

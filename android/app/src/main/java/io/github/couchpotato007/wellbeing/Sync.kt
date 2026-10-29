@@ -2,9 +2,7 @@ package io.github.couchpotato007.wellbeing
 
 import android.content.Context
 import android.os.Build
-import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.Worker
@@ -45,37 +43,65 @@ class Settings(context: Context) {
         set(value) = prefs.edit().putString("last_sync", value).apply()
 }
 
-/** Same protocol as the desktop agent, see README.md. */
+/**
+ * Collecting and uploading are separate: [collect] keeps what Android
+ * recorded in the [Store] and needs no network, [run] also uploads what
+ * changed since the last upload, whenever the server is reachable. Same
+ * protocol as the desktop agent, see README.md.
+ */
 object Sync {
-    /** How far back to go when the server has nothing for this device yet. */
-    private const val FIRST_SYNC_DAYS = 30L
-
-    /** How much of the already synced time is synced again. */
-    private const val RESYNC_MS = 600_000L
+    /** How far back to go on the first collect, Android has about a week. */
+    private const val FIRST_COLLECT_DAYS = 30L
 
     private const val WORK_NAME = "sync"
 
-    /** Syncs once and returns the number of uploaded events. */
+    /** Reads what Android recorded since the last collect into the store. */
+    fun collect(context: Context) {
+        if (!Usage.hasAccess(context)) return
+        val store = Store.get(context)
+        val now = System.currentTimeMillis()
+        val from = store.getState("collected_until_ms") ?: (now - TimeUnit.DAYS.toMillis(FIRST_COLLECT_DAYS))
+        val launchers = Usage.launchers(context)
+        // a new home screen app, or events from before they were left out
+        val known = launchers.sorted().joinToString(",").hashCode().toLong()
+        if (store.getState("launchers") != known) {
+            store.removeApps(launchers)
+            store.setState("launchers", known)
+        }
+        store.replace(Usage.KINDS, from - Usage.LOOKBACK_MS, from, Usage.events(context, from, now, launchers))
+        store.setState("collected_until_ms", now)
+        store.prune(now - TimeUnit.DAYS.toMillis(Store.KEEP_DAYS))
+    }
+
+    /** Collects, then uploads what the server doesn't have. Returns the number of uploaded events. */
     fun run(context: Context): Int {
+        collect(context)
         val settings = Settings(context)
         val server = settings.server ?: throw IOException("No server set up")
+        val store = Store.get(context)
+        val pending = store.takePending()
         val result = runCatching {
-            val base = deviceUrl(server)
-            val cursor = cursor(server)
-            val now = System.currentTimeMillis()
-            val from = if (cursor == 0L) now - TimeUnit.DAYS.toMillis(FIRST_SYNC_DAYS) else cursor - RESYNC_MS
-            val events = Usage.events(context, from, now)
+            // a server that lost data (a restored backup, a new database) gets it again
+            val from = store.boundary(minOf(pending, cursor(server)))
+            val events = store.events(from)
+            // the app's name as in the events, with what Android says it is
+            val names = events.filter { it.kind == Event.WINDOW }.associate { it.title to it.app }
+            val types = Usage.appTypes(context, names.keys).map { (pkg, type) ->
+                JSONObject().put("app", names.getValue(pkg)).put("type", type)
+            }
             val body = JSONObject()
                 .put("from_ms", from)
                 .put("os", "Android ${Build.VERSION.RELEASE}")
                 .put("events", JSONArray(events.map { it.toJson() }))
-            request("POST", "$base/events", server.token, body.toString())
+                .put("app_types", JSONArray(types))
+            request("POST", "${deviceUrl(server)}/events", server.token, body.toString())
             events.size
         }
+        result.onFailure { store.restorePending(pending) }
         val time = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date())
         settings.lastSync = result.fold(
             { "$time: uploaded $it events" },
-            { "$time: failed, ${describe(it)}" },
+            { "$time: failed, ${describe(it)}. Kept on this phone until it works." },
         )
         return result.getOrThrow()
     }
@@ -114,17 +140,15 @@ object Sync {
         else -> error.message ?: error.toString()
     }
 
-    /** Syncs every 15 minutes (the shortest WorkManager allows) while online. */
+    /**
+     * Collects every 15 minutes (the shortest WorkManager allows), online or
+     * not, and uploads if a server is set up.
+     */
     fun schedule(context: Context) {
-        val work = PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES)
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-            .build()
+        val work = PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES).build()
+        // UPDATE drops the network constraint earlier versions had
         WorkManager.getInstance(context)
-            .enqueueUniquePeriodicWork(WORK_NAME, ExistingPeriodicWorkPolicy.KEEP, work)
-    }
-
-    fun cancel(context: Context) {
-        WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
+            .enqueueUniquePeriodicWork(WORK_NAME, ExistingPeriodicWorkPolicy.UPDATE, work)
     }
 
     fun request(method: String, url: String, token: String, body: String?): String {
@@ -153,12 +177,18 @@ object Sync {
 
 class HttpException(val status: Int, val body: String) : IOException("HTTP $status $body".trim())
 
+/**
+ * Not retried when the upload fails: the server is often out of reach for
+ * a while (e.g. only on the home network), the next run tries again.
+ */
 class SyncWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
-    override fun doWork(): Result =
+    override fun doWork(): Result {
         try {
-            Sync.run(applicationContext)
-            Result.success()
+            if (Settings(applicationContext).server == null) Sync.collect(applicationContext)
+            else Sync.run(applicationContext)
         } catch (e: Exception) {
-            Result.retry()
+            // in lastSync
         }
+        return Result.success()
+    }
 }

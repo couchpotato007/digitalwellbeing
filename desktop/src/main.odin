@@ -27,8 +27,8 @@ Page :: enum {
 }
 
 PAGES := [Page]kiln.NavItem {
-	.Overview = {"◆", "Overview"},
-	.Settings = {"⚙", "Settings"},
+	.Overview = {ICON_OVERVIEW, "Overview"},
+	.Settings = {ICON_SETTINGS, "Settings"},
 }
 
 SIDEBAR_WIDTH :: 220
@@ -126,7 +126,13 @@ view :: proc(m: ^Model, out: ^[dynamic]Msg) {
 }
 
 sidebar :: proc(m: ^Model, out: ^[dynamic]Msg, collapsed: bool) {
-	if kiln.column(.SM, .MD, fill = .Height, width = collapsed ? RAIL_WIDTH : SIDEBAR_WIDTH, bg = .Sunken) {
+	if kiln.column(
+		.SM,
+		.MD,
+		fill = .Height,
+		width = collapsed ? RAIL_WIDTH : SIDEBAR_WIDTH,
+		bg = .Sunken,
+	) {
 		brand(collapsed)
 		if p, ok := kiln.nav(m.page, PAGES, collapsed); ok {append(out, Go_To{p})}
 		kiln.spacer()
@@ -140,14 +146,14 @@ sidebar :: proc(m: ^Model, out: ^[dynamic]Msg, collapsed: bool) {
 
 brand :: proc(collapsed: bool) {
 	if kiln.row(.SM, padding = .SM) {
-		kiln.text("◆", .Title, .Primary)
+		kiln.icon(ICON_LOGO, .Title, .Primary)
 		if !collapsed {kiln.text("Wellbeing", .Title)}
 	}
 }
 
 top_bar :: proc(m: ^Model) {
 	if kiln.row(.SM, padding = .SM, bg = .Sunken) {
-		if kiln.button("☰", .Ghost) {kiln.show("nav")}
+		if kiln.button(kiln.ICON_MENU, .Ghost) {kiln.show("nav")}
 		kiln.text("Wellbeing", .Subtitle)
 		kiln.spacer()
 		kiln.badge(PAGES[m.page].label, .Primary)
@@ -166,7 +172,10 @@ snapshot_setup :: proc(model: rawptr) {
 	if FIXTURE == "" {return}
 	m := (^Model)(model)
 	if data, err := os.read_entire_file(FIXTURE, context.allocator); err == nil {
-		dashboard_receive(&m.dashboard, {kind = .Stats, gen = m.dashboard.gen, status = 200, body = string(data)})
+		dashboard_receive(
+			&m.dashboard,
+			{kind = .Stats, gen = m.dashboard.gen, status = 200, body = string(data)},
+		)
 	}
 }
 

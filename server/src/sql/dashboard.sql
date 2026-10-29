@@ -11,7 +11,8 @@ SELECT
   CAST(unixepoch(date, printf('-%d days', 2 * n - 1), 'utc') * 1000 AS INTEGER) AS previous_since_ms,
   CAST(date(date, printf('-%d days', n)) AS TEXT) AS previous_date,
   CAST(date(date, printf('+%d days', n)) AS TEXT) AS next_date,
-  CAST(date('now', 'localtime') AS TEXT) AS today
+  CAST(date('now', 'localtime') AS TEXT) AS today,
+  CAST(unixepoch('subsec') * 1000 AS INTEGER) AS now_ms
 FROM (
   SELECT coalesce(date(CAST(sqlc.arg(date) AS TEXT)), date('now', 'localtime')) AS date,
     CAST(sqlc.arg(days) AS INTEGER) AS n
@@ -30,7 +31,8 @@ SELECT CAST(date AS TEXT) AS date,
   CAST(unixepoch(date, '+1 day', 'utc') * 1000 AS INTEGER) AS end_ms
 FROM day;
 
--- Every stretch of screen time, with its local date and hour.
+-- Every stretch of screen time in the range, also those that started up to a
+-- day before and go into it, with its local date and hour.
 -- name: ScreenTime :many
 SELECT device, category,
   CAST(date(start_ms / 1000, 'unixepoch', 'localtime') AS TEXT) AS date,
@@ -40,7 +42,8 @@ SELECT device, category,
   start_ms,
   CAST(start_ms + duration_ms AS INTEGER) AS end_ms
 FROM events
-WHERE kind = 'window' AND start_ms >= sqlc.arg(since_ms) AND start_ms < sqlc.arg(until_ms)
+WHERE kind = 'window' AND start_ms >= CAST(sqlc.arg(since_ms) AS INTEGER) - 86400000 AND start_ms < sqlc.arg(until_ms)
+  AND start_ms + duration_ms > CAST(sqlc.arg(since_ms) AS INTEGER)
   AND (CAST(sqlc.arg(device) AS TEXT) = '' OR device = sqlc.arg(device))
 ORDER BY start_ms;
 
@@ -82,7 +85,7 @@ SELECT app AS name,
   CAST(group_concat(DISTINCT device) AS TEXT) AS detail,
   CAST(sum(duration_ms) AS INTEGER) AS ms
 FROM events
-WHERE category = 'Uncategorized' AND start_ms >= sqlc.arg(since_ms)
+WHERE category = 'Uncategorized' AND kind IN ('window', 'web') AND start_ms >= sqlc.arg(since_ms)
 GROUP BY app ORDER BY ms DESC LIMIT 15;
 
 -- name: UncategorizedTitles :many

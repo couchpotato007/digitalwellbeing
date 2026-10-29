@@ -41,8 +41,83 @@ data class Report(
 
 data class UsageItem(val name: String, val detail: String, val ms: Long)
 
-/** What a block of the activity view was made of, from `GET /api/block`. */
-data class BlockUsage(val apps: List<UsageItem>, val titles: List<UsageItem>)
+/** From `GET /api/insights`, see insights.gleam on the server. */
+data class Insights(
+    val pickups: Int,
+    /** 24 entries, per hour of the day. */
+    val pickupHours: List<Int>,
+    /** "07:12", for several days the median, "" for none. */
+    val firstPickup: String,
+    /** Unlocks up to a minute after a notification. */
+    val notificationPickups: Int,
+    /** The app used first after an unlock. */
+    val pickupApps: List<CountItem>,
+    val notifications: Int,
+    val notificationApps: List<CountItem>,
+    val screenOns: Int,
+    val shortScreenOns: Int,
+    val medianScreenOnMs: Long,
+    val audioMs: Long,
+    val audioApps: List<UsageItem>,
+    /** Screen time by the rating of its category. */
+    val productiveMs: Long,
+    val neutralMs: Long,
+    val distractingMs: Long,
+    /** Stretches of 25+ minutes in one productive category. */
+    val longStretches: Int,
+    val longStretchMs: Long,
+    /** Name is the category, detail when ("10:05–11:40"). */
+    val longestStretch: UsageItem,
+    val longStretchCategories: List<UsageItem>,
+    val appSwitches: Int,
+    val medianSessionMs: Long,
+    val phoneDuringComputerMs: Long,
+    val pickupsDuringComputer: Int,
+    val total: Comparison,
+    /** Earlier periods count only up to the same time of day. */
+    val untilNow: Boolean,
+    val categories: List<Comparison>,
+    val apps: List<Comparison>,
+    /** Per day the average of the 7 days up to it, empty for one day. */
+    val trend: List<Long>,
+    /** Average per weekday (0 Sunday) and hour of the last 4 weeks. */
+    val weekHours: List<List<Long>>,
+)
+
+data class CountItem(val name: String, val count: Int)
+
+/**
+ * [ms] against the median of earlier periods, [score] a robust z-score:
+ * beyond ±2 is unusual. Without at least 3 [periods] there is nothing to say.
+ */
+data class Comparison(val name: String, val ms: Long, val usualMs: Long, val periods: Int, val score: Double)
+
+/** Screen time per app over time, from `GET /api/timeline`, see timeline.gleam. */
+data class Timeline(
+    /** 15 minutes for a day, hours for a week, days for longer. */
+    val buckets: List<Bucket>,
+    /** The most used apps, then "Other". A bucket's values add up to its [Bucket.ms]. */
+    val series: List<Series>,
+    /** For up to 7 days, oldest first. */
+    val sessions: List<Session>,
+)
+
+/** [label] is the local time ("07:15"), weekday and hour ("Mon 07:00") or date ("10-26"). */
+data class Bucket(val startMs: Long, val endMs: Long, val label: String, val ms: Long)
+
+data class Series(val name: String, val totalMs: Long, val values: List<Long>)
+
+/** Screen time without breaks of 5+ minutes, [start] and [end] are local times. */
+data class Session(
+    val date: String,
+    val startMs: Long,
+    val endMs: Long,
+    val start: String,
+    val end: String,
+    val activeMs: Long,
+    val devices: List<String>,
+    val apps: List<UsageItem>,
+)
 
 /** A row of the activity view. [date] is set for rows of a day, empty for rows of a device. */
 data class Strip(val label: String, val date: String, val startMs: Long, val endMs: Long, val segments: List<Segment>)
@@ -58,13 +133,85 @@ object Stats {
         return parse(JSONObject(body))
     }
 
-    /** [device] "" is all devices. */
-    fun block(server: Server, device: String, category: String, sinceMs: Long, untilMs: Long): BlockUsage {
-        val query = "device=" + encode(device) + "&category=" + encode(category) +
-            "&since_ms=$sinceMs&until_ms=$untilMs"
-        val body = Sync.request("GET", server.url.trimEnd('/') + "/api/block?$query", server.token, null)
+    /** Like [load], null from servers without insights. */
+    fun insights(server: Server, date: String, days: Int, device: String): Insights? {
+        val query = "date=" + encode(date) + "&days=$days&device=" + encode(device)
+        val body = try {
+            Sync.request("GET", server.url.trimEnd('/') + "/api/insights?$query", server.token, null)
+        } catch (e: HttpException) {
+            if (e.status == 404) return null else throw e
+        }
         val o = JSONObject(body)
-        return BlockUsage(usages(o.getJSONArray("apps")), usages(o.getJSONArray("titles")))
+        val counts = { a: JSONArray -> a.objects().map { CountItem(it.getString("name"), it.getInt("count")) } }
+        val comparison = { c: JSONObject ->
+            Comparison(c.getString("name"), c.getLong("ms"), c.getLong("usual_ms"), c.getInt("periods"), c.getDouble("score"))
+        }
+        val longest = o.getJSONObject("longest_stretch")
+        return Insights(
+            pickups = o.getInt("pickups"),
+            pickupHours = o.getJSONArray("pickup_hours").let { a -> (0 until a.length()).map { a.getInt(it) } },
+            firstPickup = o.getString("first_pickup"),
+            notificationPickups = o.getInt("notification_pickups"),
+            pickupApps = counts(o.getJSONArray("pickup_apps")),
+            notifications = o.getInt("notifications"),
+            notificationApps = counts(o.getJSONArray("notification_apps")),
+            screenOns = o.getInt("screen_ons"),
+            shortScreenOns = o.getInt("short_screen_ons"),
+            medianScreenOnMs = o.getLong("median_screen_on_ms"),
+            audioMs = o.getLong("audio_ms"),
+            audioApps = usages(o.getJSONArray("audio_apps")),
+            productiveMs = o.optLong("productive_ms"),
+            neutralMs = o.optLong("neutral_ms"),
+            distractingMs = o.optLong("distracting_ms"),
+            longStretches = o.getInt("long_stretches"),
+            longStretchMs = o.getLong("long_stretch_ms"),
+            longestStretch = UsageItem(longest.getString("name"), longest.getString("detail"), longest.getLong("ms")),
+            longStretchCategories = usages(o.getJSONArray("long_stretch_categories")),
+            appSwitches = o.getInt("app_switches"),
+            medianSessionMs = o.getLong("median_session_ms"),
+            phoneDuringComputerMs = o.getLong("phone_during_computer_ms"),
+            pickupsDuringComputer = o.getInt("pickups_during_computer"),
+            total = comparison(o.getJSONObject("total")),
+            untilNow = o.getBoolean("until_now"),
+            categories = o.getJSONArray("categories").objects().map(comparison),
+            apps = o.optJSONArray("apps")?.objects()?.map(comparison).orEmpty(),
+            trend = o.getJSONArray("trend").objects().map { it.getLong("ms") },
+            weekHours = o.getJSONArray("week_hours").let { a ->
+                (0 until a.length()).map { d -> a.getJSONArray(d).let { h -> (0 until h.length()).map { h.getLong(it) } } }
+            },
+        )
+    }
+
+    /** Like [load], null from servers without it. */
+    fun timeline(server: Server, date: String, days: Int, device: String): Timeline? {
+        val query = "date=" + encode(date) + "&days=$days&device=" + encode(device)
+        val body = try {
+            Sync.request("GET", server.url.trimEnd('/') + "/api/timeline?$query", server.token, null)
+        } catch (e: HttpException) {
+            if (e.status == 404) return null else throw e
+        }
+        val o = JSONObject(body)
+        return Timeline(
+            buckets = o.getJSONArray("buckets").objects().map {
+                Bucket(it.getLong("start_ms"), it.getLong("end_ms"), it.getString("label"), it.getLong("ms"))
+            },
+            series = o.getJSONArray("series").objects().map { s ->
+                val values = s.getJSONArray("values")
+                Series(s.getString("name"), s.getLong("total_ms"), (0 until values.length()).map { values.getLong(it) })
+            },
+            sessions = o.getJSONArray("sessions").objects().map {
+                Session(
+                    it.getString("date"),
+                    it.getLong("start_ms"),
+                    it.getLong("end_ms"),
+                    it.getString("start"),
+                    it.getString("end"),
+                    it.getLong("active_ms"),
+                    it.getJSONArray("devices").strings(),
+                    usages(it.getJSONArray("apps")),
+                )
+            },
+        )
     }
 
     private fun encode(value: String) = URLEncoder.encode(value, "UTF-8").replace("+", "%20")

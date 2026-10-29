@@ -1,7 +1,7 @@
-import categories.{Rule}
+import categories
 import db
 import gleam/list
-import gleam/string
+import gleam/option.{None}
 import rules
 import shared.{Event}
 import sqlight
@@ -11,17 +11,22 @@ fn with_events(run: fn(sqlight.Connection) -> a) -> a {
   let assert Ok(Nil) = db.migrate(conn)
   let assert Ok(filter) = db.filter(conn, "", 1, "")
   let start = filter.since_ms + 3_600_000
-  let assert Ok(rules) = db.rules(conn)
   let assert Ok(Nil) =
     db.replace_events(
       conn,
       "laptop",
-      shared.Upload(from_ms: 0, os: "", events: [
-        Event(shared.Window, start, 600_000, "Code", "db.gleam"),
-        Event(shared.Window, start + 600_000, 300_000, "Dropbox", "Files"),
-        Event(shared.Web, start + 600_000, 300_000, "dropbox.com", "Files"),
+      shared.Upload(from_ms: 0, os: "", app_types: [], events: [
+        Event(shared.Window, start, 600_000, "Code", "db.gleam", None),
+        Event(shared.Window, start + 600_000, 300_000, "Dropbox", "Files", None),
+        Event(
+          shared.Web,
+          start + 600_000,
+          300_000,
+          "dropbox.com",
+          "Files",
+          None,
+        ),
       ]),
-      categories.categorizer(rules),
     )
   run(conn)
 }
@@ -37,36 +42,58 @@ pub fn parse_test() {
   let assert Error(_) = rules.parse(0, "Work", ["("], False, [])
 }
 
-pub fn add_pattern_test() {
-  let rule = Rule(1, "Work", "code", True, [])
-  let added = rules.add_pattern(rule, "x.com")
-  assert added.regex == "code|x\\.com"
-  // already there
-  assert rules.add_pattern(added, "x.com") == added
-}
-
 pub fn preview_test() {
   use conn <- with_events
   let assert Ok(rule) = rules.parse(0, "Sync", ["dropbox"], True, [])
   let assert Ok(Ok(preview)) = rules.preview(conn, rule)
-  // only the window counts as screen time, the tab is part of it
+  // the window, with the tab's website
   assert preview.screen_ms == 300_000
-  assert list.map(preview.apps, fn(app) { app.name })
-    |> list.sort(string.compare)
-    == ["Dropbox", "dropbox.com"]
+  assert list.map(preview.apps, fn(app) { app.name }) == ["Dropbox"]
   let assert Ok(Ok(none)) =
-    rules.preview(conn, Rule(..rule, devices: ["phone"]))
+    rules.preview(conn, categories.Rule(..rule, devices: ["phone"]))
   assert none.apps == []
 }
 
 pub fn overview_test() {
   use conn <- with_events
   let assert Ok(overview) = rules.overview(conn)
-  let assert Ok(#(_, ms)) =
-    list.find(overview.rules, fn(entry) {
-      { entry.0 }.name == "Work > Programming"
+  let assert Ok(programming) =
+    list.find(overview.categories, fn(entry) {
+      entry.category.name == "Work > Programming"
     })
-  assert ms == 600_000
+  assert programming.ms == 600_000
+  assert programming.category.rating == categories.Productive
+  let assert [code] = programming.items
+  assert code.name == "Code" && code.source == categories.Known
   assert overview.devices == ["laptop"]
-  let assert [_, _] = overview.uncategorized_apps
+  // the window showed dropbox.com, which is unknown
+  let assert [dropbox] = overview.unsorted
+  assert dropbox.name == "dropbox.com" && dropbox.ms == 300_000
+}
+
+pub fn assign_test() {
+  use conn <- with_events
+  let assert Ok(Nil) = db.save_category(conn, "Storage", categories.Neutral)
+  let assert Ok(Nil) = db.assign(conn, "Dropbox.com", "Storage")
+  let assert Ok(Nil) = db.recategorize(conn)
+  let assert Ok(overview) = rules.overview(conn)
+  assert overview.unsorted == []
+  let assert Ok(storage) =
+    list.find(overview.categories, fn(e) { e.category.name == "Storage" })
+  let assert [item] = storage.items
+  assert item.source == categories.Assigned
+
+  // renamed, it stays assigned
+  let assert Ok(Nil) = db.rename_category(conn, "Storage", "Cloud")
+  let assert Ok(Nil) = db.recategorize(conn)
+  let assert Ok(overview) = rules.overview(conn)
+  let assert Ok(cloud) =
+    list.find(overview.categories, fn(e) { e.category.name == "Cloud" })
+  assert cloud.ms == 300_000
+
+  // deleted, back to unsorted
+  let assert Ok(Nil) = db.delete_category(conn, "Cloud")
+  let assert Ok(Nil) = db.recategorize(conn)
+  let assert Ok(overview) = rules.overview(conn)
+  let assert [_] = overview.unsorted
 }

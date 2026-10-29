@@ -6,9 +6,9 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order
-import gleam/result
 import gleam/string
 import gleam/uri
+import insights.{type Count, type Insights}
 import lustre/attribute.{class, href, style}
 import lustre/element.{type Element}
 import lustre/element/html.{text}
@@ -55,6 +55,8 @@ section { background: var(--card); border: 1px solid var(--line); border-radius:
 .col div { background: var(--bar); border-radius: 4px 4px 0 0; min-height: 2px; }
 .col:hover div { opacity: .75; }
 .col.today div { background: var(--c1); }
+.col { position: relative; }
+.col i { position: absolute; left: 8%; right: 8%; height: 2px; background: var(--fg); opacity: .55; border-radius: 1px; }
 .col span { font-size: 11px; color: var(--muted); text-align: center; overflow: hidden; white-space: nowrap; height: 16px; }
 .strip { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 8px; align-items: center; margin: 4px 0; }
 .strip > a, .strip > span { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -113,6 +115,39 @@ select { font: inherit; color: inherit; border: 1px solid var(--line); border-ra
 .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 .actions .danger { margin-left: auto; }
 [hidden] { display: none !important; }
+.up { color: #d0453a; } .down { color: #1b9a6a; }
+.cat-box { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 0 16px; }
+.cat-box[open] { padding-bottom: 12px; }
+.cat-box summary { display: flex; gap: 8px; align-items: center; padding: 12px 0; cursor: pointer; list-style: none; }
+.cat-box summary::-webkit-details-marker { display: none; }
+.cat-box .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.cat-box > form.toolbar { margin: 4px 0 8px; }
+.item { display: grid; grid-template-columns: minmax(0, 1fr) 64px minmax(0, 170px) auto; gap: 6px 10px;
+  align-items: center; padding: 6px 0; border-top: 1px solid var(--line); margin: 0; }
+.item-name { min-width: 0; } .item-name b { display: block; font-weight: 500; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; } .item-name small { color: var(--muted); font-size: 12px; }
+.item .t { text-align: right; }
+@media (max-width: 600px) { .item { grid-template-columns: minmax(0, 1fr) 56px; } .item select { grid-column: 1 / -1; } }
+.rules { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
+.ratings { margin-top: 16px; }
+.rating-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--line);
+  margin-bottom: 6px; }
+.productive { background: #1baf7a; } .neutral { background: var(--gray); } .distracting { background: #e34948; }
+.badge.productive { color: #1b9a6a; border-color: currentColor; background: none; }
+.badge.neutral { background: none; }
+.badge.distracting { color: #d0453a; border-color: currentColor; background: none; }
+.cmp { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 6px 0;
+  border-top: 1px solid var(--line); }
+.cmp:first-of-type { border-top: 0; }
+.cmp small { grid-column: 1 / -1; color: var(--muted); }
+.vs { grid-column: 1 / -1; position: relative; height: 6px; background: var(--line); border-radius: 3px; }
+.vs div { height: 100%; border-radius: 3px; }
+.vs i { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--fg); }
+.heat { display: grid; grid-template-columns: 34px repeat(24, minmax(0, 1fr)); gap: 2px; font-size: 11px;
+  color: var(--muted); }
+.heat div { aspect-ratio: 1; border-radius: 2px; background: var(--bg); }
+.note { font-size: 13px; color: var(--muted); margin-top: 10px; }
+section section { border: 0; padding: 0; background: none; }
 "
 
 /// Link to the dashboard with another date, number of days or device.
@@ -136,7 +171,7 @@ fn on_class(on: Bool) -> String {
   }
 }
 
-pub fn page(report: Report) -> String {
+pub fn page(report: Report, insights: Insights) -> String {
   let filter = report.filter
   let order = report.category_order
   let device_name = case
@@ -262,8 +297,11 @@ pub fn page(report: Report) -> String {
           }
         }
       }),
-      chart(report, report.timeline, True),
+      rating_bar(insights),
+      trend_chart(report, insights.trend),
+      usual_note(insights, report.filter.days),
     ]),
+    comparisons(report, insights),
     case report.strips {
       [] -> element.none()
       strips -> activity(order, strips, filter.days)
@@ -282,6 +320,9 @@ pub fn page(report: Report) -> String {
           ),
         ])
     },
+    phone(report, insights),
+    focus(report, insights),
+    usual_week(insights.week_hours),
     html.div([class("grid")], [
       usage_list_with(
         "Categories",
@@ -487,230 +528,265 @@ fn document(title: String, children: List(Element(msg))) -> String {
   |> element.to_document_string
 }
 
-/// All categories as a tree, grouped by their top level, each with its
-/// patterns and time, and below what has no category yet.
-pub fn categories_page(overview: rules.Overview, error: String) -> String {
+/// The categories with their rating and what is in them, and above them
+/// what has no category yet, to sort with a click. `open` is the category
+/// shown open.
+pub fn categories_page(
+  overview: rules.Overview,
+  open: String,
+  error: String,
+) -> String {
   let order = overview.category_order
-  let groups =
-    list.group(overview.rules, fn(entry) { stats.top_level({ entry.0 }.name) })
-  // groups in the colors' order, the rest after it by name
-  let group_names =
-    list.filter(order, dict.has_key(groups, _))
-    |> list.append(
-      dict.keys(groups)
-      |> list.filter(fn(name) { !list.contains(order, name) })
-      |> list.sort(string.compare),
-    )
-  let names =
-    list.map(overview.rules, fn(entry) { { entry.0 }.name })
-    |> list.unique
-    |> list.sort(string.compare)
-  let missing_defaults =
-    list.any(categories.defaults, fn(default) {
-      !list.contains(names, default.name)
-    })
+  let names = list.map(overview.categories, fn(entry) { entry.category.name })
   document("Categories", [
     html.header([], [
       html.h1([], [text("Categories")]),
-      html.nav([], [html.a([href("/")], [text("Screen time")])]),
+      html.nav([], [html.a([href("/")], [text("‹ Screen time")])]),
     ]),
-    html.section([], [
-      html.p([class("muted")], [
-        text(
-          "Every app and window title gets the deepest category with a matching
-          pattern (for browser tabs: the domain and tab title). A rule without
-          devices applies to all of them.",
-        ),
-      ]),
-      case error {
-        "" -> element.none()
-        error -> html.p([class("error")], [text(error)])
-      },
-      html.div([class("toolbar")], [
-        html.input([
-          attribute.type_("search"),
-          attribute.id("q"),
-          attribute.placeholder("Search categories and patterns"),
-          attribute.attribute("aria-label", "Search"),
-        ]),
-        html.a([class("button primary"), href("/categories/new")], [
-          text("+ New category"),
-        ]),
-        case missing_defaults {
-          True ->
-            html.form(
-              [
-                attribute.method("post"),
-                attribute.action("/categories/defaults"),
-              ],
-              [html.button([], [text("Add missing defaults")])],
-            )
-          False -> element.none()
-        },
-      ]),
+    case error {
+      "" -> element.none()
+      error -> html.p([class("error")], [text(error)])
+    },
+    html.p([class("muted")], [
+      text("Most apps and websites get a category on their own: known ones, what
+        Android says an app is, and browser windows by the website shown. Move
+        anything to another category to change it, times are of the last " <> int.to_string(
+        rules.days,
+      ) <> " days."),
     ]),
-    ..list.map(group_names, fn(group) {
-      let entries =
-        dict.get(groups, group)
-        |> result.unwrap([])
-        |> list.sort(fn(a, b) { string.compare({ a.0 }.name, { b.0 }.name) })
-      let total = list.fold(entries, 0, fn(sum, entry) { sum + entry.1 })
-      html.section([class("group")], [
-        html.div([class("group-head")], [
-          html.span([class("sw " <> color_class(order, group))], []),
-          html.b([], [text(group)]),
-          html.span([class("muted")], [
+    case overview.unsorted {
+      [] -> element.none()
+      items ->
+        html.section([], [
+          html.h2([], [
+            text("Unsorted · " <> duration(overview.unsorted_ms)),
+          ]),
+          ..list.map(items, fn(item) { item_row(item, names, "", []) })
+        ])
+    },
+    ..list.append(
+      list.map(overview.categories, fn(entry) {
+        category_section(entry, order, names, entry.category.name == open)
+      }),
+      [
+        html.section([], [
+          html.h2([], [text("New category")]),
+          html.form(
+            [
+              class("toolbar"),
+              attribute.method("post"),
+              attribute.action("/categories/save"),
+            ],
+            [
+              html.input([
+                attribute.name("name"),
+                attribute.placeholder("Work > Studying"),
+                attribute.required(True),
+              ]),
+              rating_select(categories.Neutral),
+              html.button([class("primary")], [text("Add")]),
+            ],
+          ),
+          html.small([class("help")], [
             text(
-              duration(total) <> " · " <> int.to_string(rules.days) <> " days",
+              "Use > for subcategories, they share the color of their group.",
             ),
           ]),
         ]),
-        ..list.map(entries, fn(entry) { category_row(entry.0, entry.1) })
-      ])
-    })
-    |> list.append([
-      html.div([class("grid")], [
-        uncategorized_list(
-          "Without a category · apps and domains",
-          overview.uncategorized_apps,
-          names,
-          overview.rules,
+        html.form(
+          [attribute.method("post"), attribute.action("/categories/builtins")],
+          [
+            html.button([], [text("Add missing built-in categories")]),
+          ],
         ),
-        uncategorized_list(
-          "Without a category · window titles",
-          overview.uncategorized_titles,
-          names,
-          overview.rules,
-        ),
-      ]),
-      html.script(
-        [],
-        "
-const q = document.getElementById('q');
-q.addEventListener('input', () => {
-  const term = q.value.toLowerCase();
-  document.querySelectorAll('[data-q]').forEach(el => el.hidden = term && !el.dataset.q.includes(term));
-  document.querySelectorAll('.group').forEach(g => g.hidden = !g.querySelector('[data-q]:not([hidden])'));
-});",
-      ),
-    ])
+      ],
+    )
   ])
 }
 
-/// A rule in the list: its name indented by depth, a few patterns, devices.
-fn category_row(rule: Rule, ms: Int) -> Element(msg) {
-  let parts = string.split(rule.name, " > ")
-  let depth = list.length(parts) - 1
-  let patterns = categories.split_patterns(rule.regex)
-  let shown = list.take(patterns, 6)
-  let more = list.length(patterns) - list.length(shown)
-  html.a(
+fn rating_select(rating: categories.Rating) -> Element(msg) {
+  html.select(
+    [attribute.name("rating")],
+    list.map(
+      [categories.Productive, categories.Neutral, categories.Distracting],
+      fn(option) {
+        let value = categories.rating_to_string(option)
+        html.option(
+          [attribute.value(value), attribute.selected(option == rating)],
+          value,
+        )
+      },
+    ),
+  )
+}
+
+fn rating_badge(rating: categories.Rating) -> Element(msg) {
+  let value = categories.rating_to_string(rating)
+  html.span([class("badge " <> value)], [text(value)])
+}
+
+fn source_name(source: categories.Source) -> String {
+  case source {
+    categories.Assigned -> "assigned"
+    categories.ByRule -> "rule"
+    categories.Known -> "known app"
+    categories.AndroidType -> "app type"
+    categories.InBrowser -> "in a browser"
+    categories.NoSource -> ""
+  }
+}
+
+/// A category, open to change its name and rating, move what is in it, and
+/// its advanced rules.
+fn category_section(
+  entry: rules.Entry,
+  order: List(String),
+  names: List(String),
+  open: Bool,
+) -> Element(msg) {
+  let name = entry.category.name
+  html.details([class("cat-box"), attribute.open(open)], [
+    html.summary([], [
+      html.span([class("sw " <> color_class(order, name))], []),
+      html.b([], [text(name)]),
+      rating_badge(entry.category.rating),
+      html.span([class("muted grow")], [
+        text(
+          list.take(entry.items, 3)
+          |> list.map(fn(item) { item.name })
+          |> string.join(", "),
+        ),
+      ]),
+      html.span([class("t")], [text(duration(entry.ms))]),
+    ]),
+    html.form(
+      [
+        class("toolbar"),
+        attribute.method("post"),
+        attribute.action("/categories/save"),
+      ],
+      [
+        hidden("old_name", name),
+        hidden("open", name),
+        html.input([attribute.name("name"), attribute.value(name)]),
+        rating_select(entry.category.rating),
+        html.button([], [text("Save")]),
+        html.button(
+          [
+            class("danger"),
+            attribute.formaction("/categories/delete"),
+            attribute.attribute(
+              "onclick",
+              "return confirm('Delete this category? Its apps go back to automatic.')",
+            ),
+          ],
+          [text("Delete")],
+        ),
+      ],
+    ),
+    case entry.items {
+      [] -> html.p([class("muted")], [text("Nothing in the last 30 days.")])
+      items ->
+        html.div(
+          [],
+          list.map(list.take(items, 30), fn(item) {
+            item_row(item, names, name, case item.source {
+              categories.Assigned -> [
+                html.button(
+                  [
+                    attribute.name("category"),
+                    attribute.value(""),
+                    attribute.title("Let it get its category on its own again"),
+                  ],
+                  [text("Automatic")],
+                ),
+              ]
+              _ -> []
+            })
+          }),
+        )
+    },
+    html.div([class("rules")], [
+      html.small([class("help")], [text("Advanced rules")]),
+      ..list.append(
+        list.map(entry.rules, fn(rule) {
+          html.a([class("chip"), href("/rules/" <> int.to_string(rule.id))], [
+            text(categories.split_patterns(rule.regex) |> string.join(" | ")),
+          ])
+        }),
+        [
+          html.a(
+            [
+              class("chip more"),
+              href("/rules/new?category=" <> uri.percent_encode(name)),
+            ],
+            [text("+ rule")],
+          ),
+        ],
+      )
+    ]),
+  ])
+}
+
+/// An app or website with its time, why it is where it is, and a form to
+/// move it to another category. `current` is its category, "" for none.
+fn item_row(
+  item: rules.Item,
+  names: List(String),
+  current: String,
+  extra: List(Element(msg)),
+) -> Element(msg) {
+  html.form(
     [
-      class("cat"),
-      href("/categories/" <> int.to_string(rule.id)),
-      attribute.data(
-        "q",
-        string.lowercase(rule.name <> " " <> string.join(patterns, " ")),
-      ),
-      style("padding-left", int.to_string(depth * 20) <> "px"),
+      class("item"),
+      attribute.method("post"),
+      attribute.action("/categories/assign"),
     ],
     [
-      html.div([class("cat-name")], [
-        html.b([], [text(list.last(parts) |> result.unwrap(rule.name))]),
-        case rule.devices {
-          [] -> element.none()
-          devices ->
-            html.span([class("badge")], [
-              text("only " <> string.join(devices, ", ")),
-            ])
-        },
+      hidden("app", item.name),
+      hidden("open", current),
+      html.div([class("item-name")], [
+        html.b([attribute.title(item.name)], [text(item.name)]),
+        html.small([], [
+          text(
+            [source_name(item.source), string.join(item.devices, ", ")]
+            |> list.filter(fn(part) { part != "" })
+            |> string.join(" · "),
+          ),
+        ]),
       ]),
-      html.span([class("t")], [text(duration(ms))]),
-      html.div(
-        [class("chips")],
-        list.map(shown, fn(pattern) {
-          html.span([class("chip"), attribute.title(pattern)], [
-            text(case string.length(pattern) > 28 {
-              True -> string.slice(pattern, 0, 26) <> "…"
-              False -> pattern
-            }),
-          ])
-        })
-          |> list.append(case more {
-            0 -> []
-            n -> [
-              html.span([class("chip more")], [text("+" <> int.to_string(n))]),
-            ]
-          }),
+      html.span([class("t")], [text(duration(item.ms))]),
+      html.select(
+        [
+          attribute.name("category"),
+          attribute.attribute("onchange", "this.form.submit()"),
+        ],
+        [
+          html.option(
+            [attribute.value(current), attribute.selected(True)],
+            case current {
+              "" -> "Move to…"
+              name -> name
+            },
+          ),
+          ..list.filter(names, fn(name) { name != current })
+          |> list.map(fn(name) { html.option([attribute.value(name)], name) })
+        ],
       ),
+      ..extra
     ],
   )
 }
 
-/// What has no category, each with a form to add it to one as a pattern.
-fn uncategorized_list(
-  title: String,
-  items: List(Usage),
-  names: List(String),
-  rules: List(#(Rule, Int)),
-) -> Element(msg) {
-  html.section([], [
-    html.h2([], [text(title)]),
-    case items {
-      [] -> html.p([class("muted")], [text("Everything has a category.")])
-      _ -> element.none()
-    },
-    ..list.map(items, fn(item) {
-      html.div([class("row")], [
-        html.b([attribute.title(item.name)], [text(item.name)]),
-        html.span([class("t")], [text(duration(item.ms))]),
-        html.small([], [text(item.detail)]),
-        html.form(
-          [
-            class("assign"),
-            attribute.method("post"),
-            attribute.action("/categories/assign"),
-          ],
-          [
-            html.input([
-              attribute.type_("hidden"),
-              attribute.name("text"),
-              attribute.value(item.name),
-            ]),
-            html.select(
-              [
-                attribute.name("id"),
-                attribute.attribute("aria-label", "Category"),
-              ],
-              list.map(names, fn(name) {
-                // the first rule of a name gets the pattern
-                let id =
-                  list.find(rules, fn(entry) { { entry.0 }.name == name })
-                  |> result.map(fn(entry) { { entry.0 }.id })
-                  |> result.unwrap(0)
-                html.option([attribute.value(int.to_string(id))], name)
-              }),
-            ),
-            html.button([], [text("Add")]),
-            html.a(
-              [
-                class("button"),
-                href(
-                  "/categories/new?pattern="
-                  <> uri.percent_encode(categories.escape(item.name)),
-                ),
-              ],
-              [text("New…")],
-            ),
-          ],
-        ),
-      ])
-    })
+fn hidden(name: String, value: String) -> Element(msg) {
+  html.input([
+    attribute.type_("hidden"),
+    attribute.name(name),
+    attribute.value(value),
   ])
 }
 
-/// One rule to edit, or a new one, with what it matches in the last days.
-pub fn category_editor(
+pub fn rule_editor(
   rule: Rule,
   overview: rules.Overview,
   error: String,
@@ -718,160 +794,138 @@ pub fn category_editor(
 ) -> String {
   let is_new = rule.id == 0
   let patterns = categories.split_patterns(rule.regex)
-  // every existing name, and each as a parent for a new subcategory
-  let names =
-    list.map(overview.rules, fn(entry) { { entry.0 }.name })
-    |> list.unique
-    |> list.sort(string.compare)
-  document(
-    case is_new {
-      True -> "New category"
-      False -> rule.name
-    },
-    [
-      html.header([], [
-        html.h1([], [
-          text(case is_new {
-            True -> "New category"
-            False -> rule.name
-          }),
+  let names = list.map(overview.categories, fn(entry) { entry.category.name })
+  let title = case is_new {
+    True -> "New rule"
+    False -> "Rule"
+  }
+  document(title, [
+    html.header([], [
+      html.h1([], [text(title)]),
+      html.nav([], [
+        html.a([href("/categories?open=" <> uri.percent_encode(rule.name))], [
+          text("‹ Categories"),
         ]),
-        html.nav([], [html.a([href("/categories")], [text("‹ Categories")])]),
       ]),
-      html.form(
-        [
-          class("editor"),
-          attribute.method("post"),
-          attribute.action("/categories"),
-        ],
-        [
-          html.section([], [
+    ]),
+    html.form(
+      [class("editor"), attribute.method("post"), attribute.action("/rules")],
+      [
+        html.section([], [
+          case is_new {
+            True -> element.none()
+            False -> hidden("id", int.to_string(rule.id))
+          },
+          case error {
+            "" -> element.none()
+            error -> html.p([class("error")], [text(error)])
+          },
+          html.p([class("help")], [
+            text(
+              "Rules are for what a whole app or website can't say, like window
+              titles. They win over known apps, but not over what you assigned.",
+            ),
+          ]),
+          html.label([attribute.for("category")], [text("Category")]),
+          html.input([
+            attribute.id("category"),
+            attribute.name("category"),
+            attribute.value(rule.name),
+            attribute.list("names"),
+            attribute.required(True),
+          ]),
+          html.datalist(
+            [attribute.id("names")],
+            list.map(names, fn(name) {
+              html.option([attribute.value(name)], "")
+            }),
+          ),
+          html.label([attribute.for("patterns")], [text("Patterns")]),
+          html.textarea(
+            [
+              attribute.id("patterns"),
+              attribute.name("patterns"),
+              attribute.rows(int.clamp(list.length(patterns) + 2, 6, 24)),
+              attribute.placeholder("inkpad\nlecture notes"),
+              attribute.attribute("spellcheck", "false"),
+            ],
+            string.join(patterns, "\n"),
+          ),
+          html.small([class("help")], [
+            text(
+              "One per line, each matched against the app (or website) and the
+              window title. Plain words work, they are regular expressions: \\b
+              marks a word boundary, ^x\\.com$ only matches exactly x.com.",
+            ),
+          ]),
+          html.div([class("checks")], [
+            checkbox("ignore_case", "on", rule.ignore_case, "ignore case"),
+          ]),
+          html.label([], [text("Only on these devices (none: all)")]),
+          html.div(
+            [class("checks")],
+            list.map(overview.devices, fn(device) {
+              checkbox(
+                "devices",
+                device,
+                list.contains(rule.devices, device),
+                device,
+              )
+            }),
+          ),
+          html.div([class("actions")], [
+            html.button(
+              [
+                class("primary"),
+                attribute.name("action"),
+                attribute.value("save"),
+              ],
+              [text("Save")],
+            ),
+            html.button([attribute.name("action"), attribute.value("preview")], [
+              text("Preview matches"),
+            ]),
             case is_new {
               True -> element.none()
               False ->
-                html.input([
-                  attribute.type_("hidden"),
-                  attribute.name("id"),
-                  attribute.value(int.to_string(rule.id)),
-                ])
-            },
-            case error {
-              "" -> element.none()
-              error -> html.p([class("error")], [text(error)])
-            },
-            html.label([attribute.for("name")], [text("Name")]),
-            html.input([
-              attribute.id("name"),
-              attribute.name("name"),
-              attribute.value(rule.name),
-              attribute.placeholder("Work > Programming"),
-              attribute.list("names"),
-              attribute.required(True),
-            ]),
-            html.datalist(
-              [attribute.id("names")],
-              list.flat_map(names, fn(name) {
-                [
-                  html.option([attribute.value(name)], ""),
-                  html.option([attribute.value(name <> " > ")], ""),
-                ]
-              }),
-            ),
-            html.small([class("help")], [
-              text(
-                "Use > for subcategories. The deepest matching category wins.",
-              ),
-            ]),
-            html.label([attribute.for("patterns")], [text("Patterns")]),
-            html.textarea(
-              [
-                attribute.id("patterns"),
-                attribute.name("patterns"),
-                attribute.rows(int.clamp(list.length(patterns) + 2, 6, 24)),
-                attribute.placeholder("code\nvim\ngithub\\.com"),
-                attribute.attribute("spellcheck", "false"),
-              ],
-              string.join(patterns, "\n"),
-            ),
-            html.small([class("help")], [
-              text(
-                "One per line, each matched against the app and the window
-                title. Plain words work, they are regular expressions: \\b marks
-                a word boundary, ^x\\.com$ only matches exactly x.com.",
-              ),
-            ]),
-            html.div([class("checks")], [
-              checkbox("ignore_case", "on", rule.ignore_case, "ignore case"),
-            ]),
-            html.label([], [text("Only on these devices (none: all)")]),
-            html.div(
-              [class("checks")],
-              list.map(overview.devices, fn(device) {
-                checkbox(
-                  "devices",
-                  device,
-                  list.contains(rule.devices, device),
-                  device,
+                html.button(
+                  [
+                    class("danger"),
+                    attribute.formaction(
+                      "/rules/" <> int.to_string(rule.id) <> "/delete",
+                    ),
+                    attribute.attribute(
+                      "onclick",
+                      "return confirm('Delete this rule?')",
+                    ),
+                  ],
+                  [text("Delete")],
                 )
-              }),
-            ),
-            html.div([class("actions")], [
-              html.button(
-                [
-                  class("primary"),
-                  attribute.name("action"),
-                  attribute.value("save"),
-                ],
-                [text("Save")],
-              ),
-              html.button(
-                [attribute.name("action"), attribute.value("preview")],
-                [
-                  text("Preview matches"),
-                ],
-              ),
-              case is_new {
-                True -> element.none()
-                False ->
-                  html.button(
-                    [
-                      class("danger"),
-                      attribute.formaction(
-                        "/categories/" <> int.to_string(rule.id) <> "/delete",
-                      ),
-                      attribute.attribute(
-                        "onclick",
-                        "return confirm('Delete this category?')",
-                      ),
-                    ],
-                    [text("Delete")],
-                  )
-              },
-            ]),
+            },
           ]),
-        ],
-      ),
-      case preview {
-        None -> element.none()
-        Some(preview) ->
-          html.div([], [
-            html.h2([], [
-              text(
-                "Matches in the last "
-                <> int.to_string(rules.days)
-                <> " days · "
-                <> duration(preview.screen_ms)
-                <> " screen time",
-              ),
-            ]),
-            html.div([class("grid")], [
-              usage_list("Apps and domains", preview.apps),
-              usage_list("Window titles", preview.titles),
-            ]),
-          ])
-      },
-    ],
-  )
+        ]),
+      ],
+    ),
+    case preview {
+      None -> element.none()
+      Some(preview) ->
+        html.div([], [
+          html.h2([], [
+            text(
+              "Matches in the last "
+              <> int.to_string(rules.days)
+              <> " days · "
+              <> duration(preview.screen_ms)
+              <> " screen time",
+            ),
+          ]),
+          html.div([class("grid")], [
+            usage_list("Apps and websites", preview.apps),
+            usage_list("Window titles", preview.titles),
+          ]),
+        ])
+    },
+  ])
 }
 
 fn checkbox(
@@ -893,14 +947,35 @@ fn checkbox(
 
 /// Bars per hour or day. Days link to themselves when `links` is set.
 fn chart(report: Report, buckets: List(Usage), links: Bool) -> Element(msg) {
+  chart_with(report, buckets, [], links)
+}
+
+/// The chart of the period, with each day's 7-day average as a line.
+fn trend_chart(report: Report, trend: List(Usage)) -> Element(msg) {
+  chart_with(report, report.timeline, list.map(trend, fn(day) { day.ms }), True)
+}
+
+/// `marks` are drawn as lines over the bars, one per bucket, if given.
+fn chart_with(
+  report: Report,
+  buckets: List(Usage),
+  marks: List(Int),
+  links: Bool,
+) -> Element(msg) {
   let filter = report.filter
   let max = list.fold(buckets, 1, fn(max, bucket) { int.max(max, bucket.ms) })
+  let max = list.fold(marks, max, int.max)
+  let marks = case marks {
+    [] -> list.map(buckets, fn(_) { -1 })
+    _ -> marks
+  }
   let count = list.length(buckets)
   // at most about 12 labels
   let every = int.max(1, { count + 11 } / 12)
   html.div([class("chart")], [
     html.span([class("max")], [text(duration(max))]),
-    ..list.index_map(buckets, fn(bucket, index) {
+    ..list.index_map(list.zip(buckets, marks), fn(entry, index) {
+      let #(bucket, mark) = entry
       // an hour "07" or a day "2026-10-26"
       let is_day = string.length(bucket.name) == 10
       let label = case index % every, is_day {
@@ -920,12 +995,29 @@ fn chart(report: Report, buckets: List(Usage), links: Bool) -> Element(msg) {
             False -> bucket.name <> ":00"
           }
           <> ": "
-          <> duration(bucket.ms),
+          <> duration(bucket.ms)
+          <> case mark {
+            -1 -> ""
+            ms -> ", 7-day average " <> duration(ms)
+          },
         ),
       ]
       let children = [
         html.div([style("height", percent(bucket.ms, max))], []),
         html.span([], [text(label)]),
+        case mark {
+          -1 -> element.none()
+          ms ->
+            html.i(
+              [
+                style(
+                  "bottom",
+                  "calc(16px + (100% - 16px) * " <> ratio(ms, max) <> ")",
+                ),
+              ],
+              [],
+            )
+        },
       ]
       case links && is_day {
         True ->
@@ -967,6 +1059,395 @@ fn usage_list_with(
       ])
     })
   ])
+}
+
+/// Productive, neutral and distracting time as one bar, by the ratings of
+/// their categories.
+fn rating_bar(insights: Insights) -> Element(msg) {
+  let total =
+    insights.productive_ms + insights.neutral_ms + insights.distracting_ms
+  case total {
+    0 -> element.none()
+    _ -> {
+      let parts = [
+        #("productive", insights.productive_ms),
+        #("neutral", insights.neutral_ms),
+        #("distracting", insights.distracting_ms),
+      ]
+      html.div([class("ratings")], [
+        html.div(
+          [class("rating-bar")],
+          list.map(parts, fn(part) {
+            html.div(
+              [
+                class(part.0),
+                style("width", percent(part.1, total)),
+                attribute.title(part.0 <> ": " <> duration(part.1)),
+              ],
+              [],
+            )
+          }),
+        ),
+        html.div(
+          [class("legend")],
+          list.map(parts, fn(part) {
+            html.span([], [
+              html.span([class("sw " <> part.0)], []),
+              text(part.0 <> " " <> duration(part.1)),
+            ])
+          }),
+        ),
+      ])
+    }
+  }
+}
+
+fn ratio(part: Int, whole: Int) -> String {
+  float.to_string(int.to_float(part * 1000 / int.max(whole, 1)) /. 1000.0)
+}
+
+/// How the period compares with the same one in earlier weeks, under the
+/// total.
+fn usual_note(insights: Insights, days: Int) -> Element(msg) {
+  let total = insights.total
+  case total.periods >= 3 {
+    False -> element.none()
+    True ->
+      html.p([class("note")], [
+        text(
+          "Usually "
+          <> duration(total.usual_ms)
+          <> case insights.until_now {
+            True -> " by this time"
+            False -> ""
+          }
+          <> " ("
+          <> period_name(days, total.periods)
+          <> "). ",
+        ),
+        verdict(total.score),
+      ])
+  }
+}
+
+fn period_name(days: Int, periods: Int) -> String {
+  let n = int.to_string(periods)
+  case days {
+    1 -> "median of the same weekday in the " <> n <> " weeks before"
+    7 -> "median of the " <> n <> " weeks before"
+    _ ->
+      "median of the "
+      <> n
+      <> " periods of "
+      <> int.to_string(days)
+      <> " days before"
+  }
+}
+
+/// A robust z-score in words.
+fn verdict(score: Float) -> Element(msg) {
+  case score {
+    s if s >=. 3.0 -> html.b([class("up")], [text("Far more than usual.")])
+    s if s >=. 2.0 -> html.b([class("up")], [text("More than usual.")])
+    s if s <=. -3.0 -> html.b([class("down")], [text("Far less than usual.")])
+    s if s <=. -2.0 -> html.b([class("down")], [text("Less than usual.")])
+    _ -> text("Within the usual range.")
+  }
+}
+
+/// Categories against what is usual for them, the most unusual first.
+fn comparisons(report: Report, insights: Insights) -> Element(msg) {
+  case insights.total.periods >= 3, insights.categories {
+    False, _ | _, [] -> element.none()
+    True, items -> {
+      let max =
+        list.fold(items, 1, fn(max, c) {
+          int.max(max, int.max(c.ms, c.usual_ms))
+        })
+      html.section([], [
+        html.h2([], [
+          text(case insights.until_now {
+            True -> "Categories against what is usual by this time"
+            False -> "Categories against what is usual"
+          }),
+        ]),
+        ..list.map(items, fn(c) {
+          let change = case stats.change(c.ms, c.usual_ms) {
+            Ok(p) if p > 0 -> "+" <> int.to_string(p) <> "%"
+            Ok(p) -> int.to_string(p) <> "%"
+            Error(Nil) -> "new"
+          }
+          html.div([class("cmp")], [
+            html.b([], [text(c.name)]),
+            html.span([], [text(duration(c.ms))]),
+            html.div([class("vs")], [
+              html.div(
+                [
+                  class(color_class(report.category_order, c.name)),
+                  style("width", percent(c.ms, max)),
+                ],
+                [],
+              ),
+              html.i(
+                [
+                  style("left", percent(c.usual_ms, max)),
+                  attribute.title("usually " <> duration(c.usual_ms)),
+                ],
+                [],
+              ),
+            ]),
+            html.small([], [
+              text(
+                "usually " <> duration(c.usual_ms) <> " · " <> change <> " · ",
+              ),
+              verdict(c.score),
+            ]),
+          ])
+        })
+      ])
+    }
+  }
+}
+
+/// Pickups, notifications and media, from phones.
+fn phone(report: Report, insights: Insights) -> Element(msg) {
+  let days = report.filter.days
+  let per_day = fn(n) {
+    case days {
+      1 -> int.to_string(n)
+      _ -> float.to_string(int.to_float(n * 10 / days) /. 10.0) <> " a day"
+    }
+  }
+  case insights.pickups + insights.notifications + insights.screen_ons {
+    0 -> element.none()
+    _ ->
+      html.section([], [
+        html.h2([], [text("Phone habits")]),
+        html.div([class("tiles")], [
+          tile("Pickups", per_day(insights.pickups), case days {
+            1 -> ""
+            _ -> int.to_string(insights.pickups) <> " in total"
+          }),
+          tile(
+            case days {
+              1 -> "First pickup"
+              _ -> "First pickup, median"
+            },
+            or_dash(insights.first_pickup),
+            "",
+          ),
+          tile("Notifications", per_day(insights.notifications), ""),
+          tile(
+            "Pickups after a notification",
+            percent(insights.notification_pickups, int.max(insights.pickups, 1)),
+            "within a minute",
+          ),
+          tile(
+            "Screen on under a minute",
+            percent(insights.short_screen_ons, int.max(insights.screen_ons, 1)),
+            "median " <> duration(insights.median_screen_on_ms),
+          ),
+          tile(
+            "Media playing",
+            case insights.audio_ms {
+              0 -> "–"
+              ms -> duration(ms)
+            },
+            "",
+          ),
+        ]),
+        html.h2([style("margin-top", "20px")], [
+          text(case days {
+            1 -> "Pickups by hour"
+            _ -> "Pickups by hour · all days"
+          }),
+        ]),
+        count_chart(insights.pickup_hours),
+        html.div([class("grid"), style("margin-top", "16px")], [
+          count_list("Opened first after unlocking", insights.pickup_apps),
+          count_list("Notifications", insights.notification_apps),
+          case insights.audio_apps {
+            [] -> element.none()
+            apps -> usage_list("Media", apps)
+          },
+        ]),
+      ])
+  }
+}
+
+/// Long stretches in one category, switching and use of several devices.
+fn focus(report: Report, insights: Insights) -> Element(msg) {
+  case report.total_ms {
+    0 -> element.none()
+    total -> {
+      let hours = int.max(total / 3_600_000, 1)
+      html.section([], [
+        html.h2([], [text("Focus")]),
+        html.div([class("tiles")], [
+          tile(
+            "Productive stretches 25+ min",
+            int.to_string(insights.long_stretches),
+            duration(insights.long_stretch_ms)
+              <> " · "
+              <> percent(insights.long_stretch_ms, total),
+          ),
+          tile(
+            "Longest stretch",
+            case insights.longest_stretch.ms {
+              0 -> "–"
+              ms -> duration(ms)
+            },
+            insights.longest_stretch.name
+              <> " "
+              <> insights.longest_stretch.detail,
+          ),
+          tile(
+            "App switches",
+            int.to_string(insights.app_switches / hours) <> " an hour",
+            int.to_string(insights.app_switches) <> " in total",
+          ),
+          tile(
+            "Typical session",
+            duration(insights.median_session_ms),
+            "median",
+          ),
+          ..case report.filter.device, insights.phone_during_computer_ms {
+            "", ms if ms > 0 -> [
+              tile("Phone while at a computer", duration(ms), ""),
+              tile(
+                "Pickups at a computer",
+                int.to_string(insights.pickups_during_computer),
+                "",
+              ),
+            ]
+            _, _ -> []
+          }
+        ]),
+        case insights.long_stretch_categories {
+          [] -> element.none()
+          items ->
+            html.div([style("margin-top", "16px")], [
+              usage_list_with(
+                "Productive stretches by category",
+                items,
+                fn(item) { color_class(report.category_order, item.name) },
+                fn(_) { "" },
+              ),
+            ])
+        },
+      ])
+    }
+  }
+}
+
+/// When screen time usually happens, per weekday and hour.
+fn usual_week(week: List(List(Int))) -> Element(msg) {
+  let max = list.flatten(week) |> list.fold(1, int.max)
+  case max {
+    1 -> element.none()
+    _ -> {
+      // Monday first
+      let rows = case week {
+        [sunday, ..rest] ->
+          list.zip(list.append(rest, [sunday]), [
+            "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun",
+          ])
+        [] -> []
+      }
+      html.section([], [
+        html.h2([], [text("Usual week · average of the last 4 weeks")]),
+        html.div([class("heat")], [
+          html.span([], []),
+          ..list.append(
+            list.map(hour_numbers(), fn(hour) {
+              html.span([], [
+                text(case hour % 6 {
+                  0 -> int.to_string(hour)
+                  _ -> ""
+                }),
+              ])
+            }),
+            list.flat_map(rows, fn(row) {
+              let #(hours, day) = row
+              [
+                html.span([], [text(day)]),
+                ..list.index_map(hours, fn(ms, hour) {
+                  html.div(
+                    [
+                      style(
+                        "background",
+                        "color-mix(in srgb, var(--bar) "
+                          <> int.to_string(ms * 100 / max)
+                          <> "%, var(--bg))",
+                      ),
+                      attribute.title(
+                        day
+                        <> " "
+                        <> int.to_string(hour)
+                        <> ":00: "
+                        <> duration(ms),
+                      ),
+                    ],
+                    [],
+                  )
+                })
+              ]
+            }),
+          )
+        ]),
+      ])
+    }
+  }
+}
+
+fn hour_numbers() -> List(Int) {
+  int.range(from: 0, to: 24, with: [], run: list.prepend) |> list.reverse
+}
+
+/// Bars of counts per hour.
+fn count_chart(values: List(Int)) -> Element(msg) {
+  let max = list.fold(values, 1, int.max)
+  html.div([class("chart")], [
+    html.span([class("max")], [text(int.to_string(max))]),
+    ..list.index_map(values, fn(n, hour) {
+      html.div(
+        [
+          class("col"),
+          attribute.title(int.to_string(hour) <> ":00: " <> int.to_string(n)),
+        ],
+        [
+          html.div([style("height", percent(n, max))], []),
+          html.span([], [
+            text(case hour % 2 {
+              0 -> int.to_string(hour) |> string.pad_start(2, "0")
+              _ -> ""
+            }),
+          ]),
+        ],
+      )
+    })
+  ])
+}
+
+fn count_list(title: String, items: List(Count)) -> Element(msg) {
+  case items {
+    [] -> element.none()
+    _ -> {
+      let max = list.fold(items, 1, fn(max, item) { int.max(max, item.count) })
+      html.section([], [
+        html.h2([], [text(title)]),
+        ..list.map(items, fn(item) {
+          html.div([class("row")], [
+            html.b([attribute.title(item.name)], [text(item.name)]),
+            html.span([class("t")], [text(int.to_string(item.count) <> "×")]),
+            html.div([class("meter")], [
+              html.div([style("width", percent(item.count, max))], []),
+            ]),
+          ])
+        })
+      ])
+    }
+  }
 }
 
 fn duration(ms: Int) -> String {

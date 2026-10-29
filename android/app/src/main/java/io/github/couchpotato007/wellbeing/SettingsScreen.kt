@@ -47,6 +47,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -88,6 +90,8 @@ fun SettingsScreen(
                 SyncSettings(server, lastSync, onSynced, onRemove)
             }
             AccessSettings(hasAccess)
+            NotificationSettings()
+            StoredSettings(lastSync)
             About()
         }
 
@@ -211,7 +215,7 @@ private fun SyncSettings(server: Server, lastSync: String?, onSynced: () -> Unit
 
     SettingsCard("Sync") {
         Text(
-            "Every 15 minutes while online, to ${server.url}",
+            "Every 15 minutes when ${server.url} can be reached. Until then everything is kept on this phone.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -264,6 +268,58 @@ private fun AccessSettings(hasAccess: Boolean) {
         OutlinedButton(onClick = { context.startActivity(Intent(AndroidSettings.ACTION_USAGE_ACCESS_SETTINGS)) }) {
             Text(if (hasAccess) "Open usage access settings" else "Grant usage access")
         }
+    }
+}
+
+@Composable
+private fun NotificationSettings() {
+    val context = LocalContext.current
+    var granted by remember { mutableStateOf(Listener.hasAccess(context)) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { granted = Listener.hasAccess(context) }
+    SettingsCard("Notification access") {
+        Text(
+            if (granted) "✓ Granted, the app counts notifications per app and records when media plays."
+            else "Optional. Lets the app count notifications per app (not what they say) and record " +
+                "when music, podcasts or videos play.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedButton(onClick = {
+            // straight to this app's switch (Android 11+), otherwise the list of all apps
+            val list = Intent(AndroidSettings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val detail = Intent(AndroidSettings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS).putExtra(
+                    AndroidSettings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME,
+                    android.content.ComponentName(context, Listener::class.java).flattenToString(),
+                )
+                runCatching { context.startActivity(detail) }.onFailure { context.startActivity(list) }
+            } else {
+                context.startActivity(list)
+            }
+        }) {
+            Text(if (granted) "Open notification access settings" else "Grant notification access")
+        }
+    }
+}
+
+/** What this phone keeps, and what the server doesn't have yet. */
+@Composable
+private fun StoredSettings(lastSync: String?) {
+    val context = LocalContext.current
+    var text by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(lastSync) {
+        text = withContext(Dispatchers.IO) {
+            val store = Store.get(context)
+            val (count, oldest) = store.summary()
+            val format = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT)
+            val since = oldest?.let { " since " + java.text.DateFormat.getDateInstance().format(java.util.Date(it)) }
+            val pending = store.getState("pending_from_ms")
+            "$count events${since.orEmpty()}, kept for ${Store.KEEP_DAYS} days. " +
+                if (pending == null) "All uploaded." else "Not uploaded from ${format.format(java.util.Date(pending))} on."
+        }
+    }
+    SettingsCard("On this phone") {
+        Text(text ?: "…", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

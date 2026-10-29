@@ -57,7 +57,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.format.TextStyle
@@ -91,16 +98,27 @@ private fun App() {
     // bumped to reload the chart and status
     var refresh by remember { mutableIntStateOf(0) }
     var tab by rememberSaveable { mutableStateOf(Tab.Overview) }
-    // the page the timeline opens at
-    var timelinePage by rememberSaveable { mutableIntStateOf(0) }
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         hasAccess = Usage.hasAccess(context)
         lastSync = settings.lastSync
         refresh++
     }
+    // collecting runs without a server too, it keeps what Android would forget
+    LaunchedEffect(hasAccess) {
+        if (hasAccess) Sync.schedule(context)
+    }
 
     val current = server
+    // pulled down: upload what the phone has (or only collect without a
+    // server), then load again
+    val reload: suspend () -> Unit = {
+        withContext(Dispatchers.IO) {
+            runCatching { if (current != null) Sync.run(context) else Sync.collect(context) }
+        }
+        lastSync = settings.lastSync
+        refresh++
+    }
     // with a server, all devices from there, otherwise only this phone
     val dashboard = current?.let { rememberDashboard(it, refresh) }
 
@@ -125,7 +143,7 @@ private fun App() {
             label = "tab",
         ) { shown ->
             when (shown) {
-                Tab.Overview -> Column(
+                Tab.Overview -> Refreshable(reload, dashboard) { Column(
                     Modifier
                         .fillMaxSize()
                         .verticalScroll(rememberScrollState())
@@ -144,19 +162,16 @@ private fun App() {
                         }
                     }
                     if (dashboard != null) {
-                        Dashboard(dashboard, onOpenTimeline = { page ->
-                            timelinePage = page
-                            tab = Tab.Timeline
-                        })
+                        Dashboard(dashboard, onOpenTimeline = { tab = Tab.Timeline })
                     } else {
                         if (hasAccess) UsageCard(refresh)
                         NoServerCard(onSettings = { tab = Tab.Settings })
                     }
-                }
+                } }
 
-                Tab.Timeline -> Column(Modifier.fillMaxSize().padding(top = 16.dp)) {
+                Tab.Timeline -> Refreshable(reload, dashboard) {
                     if (current != null && dashboard != null) {
-                        TimelineScreen(current, dashboard, timelinePage)
+                        TimelineScreen(dashboard)
                     } else {
                         Column(Modifier.padding(16.dp)) { NoServerCard(onSettings = { tab = Tab.Settings }) }
                     }
@@ -172,7 +187,6 @@ private fun App() {
                         Sync.schedule(context)
                     },
                     onRemove = {
-                        Sync.cancel(context)
                         settings.server = null
                         server = null
                         lastSync = null
@@ -187,6 +201,33 @@ private fun App() {
             }
         }
     }
+}
+
+/**
+ * Pulling [content] down runs [onRefresh], the indicator stays until the
+ * [dashboard] (if any) has loaded again.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun Refreshable(onRefresh: suspend () -> Unit, dashboard: DashboardState?, content: @Composable () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var refreshing by remember { mutableStateOf(false) }
+    PullToRefreshBox(
+        isRefreshing = refreshing,
+        onRefresh = {
+            refreshing = true
+            scope.launch {
+                onRefresh()
+                if (dashboard != null) {
+                    // until the reload started and is done
+                    withTimeoutOrNull(2_000) { snapshotFlow { dashboard.loading }.first { it } }
+                    snapshotFlow { dashboard.loading }.first { !it }
+                }
+                refreshing = false
+            }
+        },
+        modifier = Modifier.fillMaxSize(),
+    ) { content() }
 }
 
 @Composable
@@ -206,6 +247,7 @@ private fun UsageCard(refresh: Int) {
     // not produceState, its lint check misfires with Kotlin 2.1
     LaunchedEffect(refresh) {
         data = withContext(Dispatchers.IO) {
+            runCatching { Sync.collect(context) }
             Usage.dailyTotals(context, 7) to Usage.topAppsToday(context, 5)
         }
     }

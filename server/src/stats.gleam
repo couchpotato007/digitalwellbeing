@@ -7,6 +7,7 @@ import gleam/dict
 import gleam/int
 import gleam/json.{type Json}
 import gleam/list
+import gleam/option
 import gleam/result
 import gleam/string
 import sqlight
@@ -124,20 +125,28 @@ pub fn build(
     [first, ..] -> {
       let assert Ok(last) =
         list.max(stretches, fn(a, b) { int.compare(a.end_ms, b.end_ms) })
-      #(first.start_time, last.end_time)
+      // what started the day before was on at midnight
+      #(
+        case first.start_ms < filter.since_ms {
+          True -> "00:00"
+          False -> first.start_time
+        },
+        last.end_time,
+      )
     }
   }
+  let hours = spread(merge(intervals(stretches), 0), slots(days))
   Report(
     filter:,
     days:,
-    total_ms: union_ms(intervals(stretches)),
+    total_ms: list.fold(hours, 0, fn(sum, hour) { sum + hour.1 }),
     previous_ms: union_ms(intervals(previous)),
     sessions: list.length(sessions),
     longest_session_ms: list.fold(sessions, 0, int.max),
     first_active:,
     last_active:,
-    timeline: timeline(filter, days, stretches),
-    hours: per_hour(stretches),
+    timeline: timeline(filter, days, hours),
+    hours: per_hour(hours),
     strips: strips(filter, days, stretches),
     category_order: category_order(rules),
     device_names: [],
@@ -171,7 +180,7 @@ pub fn merge(intervals: List(#(Int, Int)), gap: Int) -> List(#(Int, Int)) {
 
 /// The screen time of each session, breaks shorter than `session_gap_ms`
 /// within it don't count.
-fn sessions(intervals: List(#(Int, Int))) -> List(Int) {
+pub fn sessions(intervals: List(#(Int, Int))) -> List(Int) {
   let #(sessions, _) =
     list.fold(merge(intervals, 0), #([], 0), fn(acc, interval) {
       let #(sessions, reach) = acc
@@ -193,33 +202,84 @@ pub fn union_ms(intervals: List(#(Int, Int))) -> Int {
   |> list.fold(0, fn(total, interval) { total + interval.1 - interval.0 })
 }
 
-fn hour_labels() -> List(String) {
-  int.range(from: 0, to: 24, with: [], run: list.prepend)
-  |> list.reverse
-  |> list.map(fn(hour) { int.to_string(hour) |> string.pad_start(2, "0") })
+/// An hour of a local day, `hour` is 0 to 23.
+pub type Slot {
+  Slot(date: String, hour: Int, start_ms: Int, end_ms: Int)
 }
 
-/// Union of the stretches grouped by `key`, one entry per label.
-fn totals_by(
-  stretches: List(Stretch),
-  key: fn(Stretch) -> String,
-) -> dict.Dict(String, Int) {
-  // list.group reverses the order within a group
-  list.group(stretches, key)
-  |> dict.map_values(fn(_, group) {
-    list.reverse(group) |> intervals |> union_ms
+/// The hours of `days`, oldest first. They are an hour long from midnight
+/// on and the last one ends with the day, so a day with a clock change is
+/// still covered, only its later hours are off by one.
+pub fn slots(days: List(Day)) -> List(Slot) {
+  list.flat_map(days, fn(day) {
+    int.range(from: 0, to: 24, with: [], run: list.prepend)
+    |> list.reverse
+    |> list.map(fn(hour) {
+      let start = int.min(day.start_ms + hour * 3_600_000, day.end_ms)
+      let end = case hour {
+        23 -> day.end_ms
+        _ -> int.min(start + 3_600_000, day.end_ms)
+      }
+      Slot(day.date, hour, start, end)
+    })
   })
+}
+
+/// How much of `intervals` falls into each slot. Both are sorted and don't
+/// overlap, so a stretch over several hours or midnight counts in each of
+/// them with the part that falls into it.
+pub fn spread(
+  intervals: List(#(Int, Int)),
+  slots: List(Slot),
+) -> List(#(Slot, Int)) {
+  spread_loop(intervals, slots, [])
+}
+
+fn spread_loop(
+  intervals: List(#(Int, Int)),
+  slots: List(Slot),
+  acc: List(#(Slot, Int)),
+) -> List(#(Slot, Int)) {
+  case slots {
+    [] -> list.reverse(acc)
+    [slot, ..rest] -> {
+      let intervals =
+        list.drop_while(intervals, fn(interval) { interval.1 <= slot.start_ms })
+      spread_loop(intervals, rest, [#(slot, overlap(intervals, slot, 0)), ..acc])
+    }
+  }
+}
+
+fn overlap(intervals: List(#(Int, Int)), slot: Slot, sum: Int) -> Int {
+  case intervals {
+    [#(start, end), ..rest] if start < slot.end_ms ->
+      overlap(
+        rest,
+        slot,
+        sum + int.min(end, slot.end_ms) - int.max(start, slot.start_ms),
+      )
+    _ -> sum
+  }
+}
+
+fn hour_label(hour: Int) -> String {
+  int.to_string(hour) |> string.pad_start(2, "0")
 }
 
 fn timeline(
   filter: Filter,
   days: List(Day),
-  stretches: List(Stretch),
+  hours: List(#(Slot, Int)),
 ) -> List(Usage) {
   case filter.days {
-    1 -> per_hour(stretches)
+    1 -> per_hour(hours)
     _ -> {
-      let totals = totals_by(stretches, fn(s) { s.date })
+      let totals =
+        list.fold(hours, dict.new(), fn(totals, hour) {
+          dict.upsert(totals, { hour.0 }.date, fn(sum) {
+            option.unwrap(sum, 0) + hour.1
+          })
+        })
       list.map(days, fn(day) {
         Usage(
           day.date,
@@ -231,12 +291,18 @@ fn timeline(
   }
 }
 
-/// Stretches of different days never overlap, so the union per hour of the
-/// day is the sum over the days.
-fn per_hour(stretches: List(Stretch)) -> List(Usage) {
-  let totals = totals_by(stretches, fn(s) { s.hour })
-  list.map(hour_labels(), fn(hour) {
-    Usage(hour, "", dict.get(totals, hour) |> result.unwrap(0))
+/// Summed over the days, one entry per hour of the day ("07").
+fn per_hour(hours: List(#(Slot, Int))) -> List(Usage) {
+  let totals =
+    list.fold(hours, dict.new(), fn(totals, hour) {
+      dict.upsert(totals, { hour.0 }.hour, fn(sum) {
+        option.unwrap(sum, 0) + hour.1
+      })
+    })
+  int.range(from: 0, to: 24, with: [], run: list.prepend)
+  |> list.reverse
+  |> list.map(fn(hour) {
+    Usage(hour_label(hour), "", dict.get(totals, hour) |> result.unwrap(0))
   })
 }
 

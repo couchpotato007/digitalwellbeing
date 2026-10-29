@@ -28,5 +28,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- with notification access (Settings), counts notifications and
+             records media playback, see Listener.kt -->
+        <service
+            android:name=".Listener"
+            android:exported="true"
+            android:label="Wellbeing"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

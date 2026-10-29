@@ -263,14 +263,14 @@ controls :: proc(d: ^Dashboard, out: ^[dynamic]Dashboard_Msg) {
 			shown, _ := kiln.date_parse(r.date)
 			today, _ := kiln.date_parse(r.today)
 			if kiln.row(.XS) {
-				if kiln.button("‹", .Ghost) {append(out, Set_Date{r.previous_date})}
+				if kiln.button(kiln.ICON_CHEVRON_LEFT, .Ghost) {append(out, Set_Date{r.previous_date})}
 				kiln.tooltip("Earlier")
 				if kiln.column(.None, width = compact ? 0 : 180) {
 					if day, ok := kiln.date_field(shown, max = today, key = "date"); ok {
 						append(out, Set_Date{kiln.date_format(day)})
 					}
 				}
-				if kiln.button("›", .Ghost, disabled = r.date >= r.today) {append(out, Set_Date{r.next_date})}
+				if kiln.button(kiln.ICON_CHEVRON_RIGHT, .Ghost, disabled = r.date >= r.today) {append(out, Set_Date{r.next_date})}
 				kiln.tooltip("Later")
 				if kiln.button("Today", .Secondary, disabled = r.date == r.today) {append(out, Set_Date{""})}
 				reload_button(d, out)
@@ -298,7 +298,7 @@ controls :: proc(d: ^Dashboard, out: ^[dynamic]Dashboard_Msg) {
 
 @(private = "file")
 reload_button :: proc(d: ^Dashboard, out: ^[dynamic]Dashboard_Msg) {
-	if kiln.button("↻", .Ghost, disabled = d.loading) {append(out, Refresh{})}
+	if kiln.button(ICON_REFRESH, .Ghost, disabled = d.loading) {append(out, Refresh{})}
 	kiln.tooltip("Reload")
 	if d.loading {kiln.spinner()}
 }

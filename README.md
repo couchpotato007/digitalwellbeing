@@ -63,22 +63,48 @@ and forth or jump to a date. It shows:
 - top categories, apps, window titles, browser domains and devices (with
   their operating system, which the agent and the app send along)
 
-Categories are set up under **Categories** on the server, or under
-Settings in the app. A category has a list of patterns (regexes) matched
-against the app and window title (for browser tabs: the domain and tab
-title), and every event gets the deepest category that matches, so
-`Work > Programming` wins over `Work`. A rule can be limited to some devices.
-Changing a rule re-categorizes everything already stored.
+Time is split exactly at hour and day boundaries, so a stretch from 23:30 to
+00:30 counts half on each day. Below that, the dashboard evaluates the data:
 
-The list groups the categories by their top level, with their time in the
-last 30 days and a search over names and patterns. The editor shows what the
-patterns match in the last 30 days before saving. Below the list is what took
-the most time without a category; each entry can be added to a category as a
-pattern with one click (or tap in the app). Categories set up in ActivityWatch
-itself are not used. A new server starts with default categories for common
-apps and sites (programming, office, chat, email, video, music, social media,
-games, news, shopping). Change or delete them as you like; "Add missing
-defaults" brings back deleted ones.
+- **Against what is usual**: the period against the median of the same
+  weekday in the 8 weeks before (for a week: the 8 weeks before, for 30
+  days: the 6 periods before), in total and per category, the most unusual
+  first. How unusual is a robust z-score (median absolute deviation, at least
+  a tenth of the usual and 10 minutes a day), so one holiday doesn't skew
+  it; beyond ±2 is marked. Today is compared with earlier days up to the same
+  time. A week or month also shows the 7-day average as a line on the chart.
+- **Phone habits**: pickups (per hour, the first of the day), notifications
+  per app, how many pickups came within a minute after a notification, the
+  app opened first after unlocking, how often the screen was on for less than
+  a minute, and media playing.
+- **Focus**: stretches of 25+ minutes in one category on one device
+  (interruptions under a minute don't end them), app switches, the typical
+  session, and for all devices how long the phone was used while a computer
+  was in use.
+- **Usual week**: a heatmap of screen time per weekday and hour over the last
+  4 weeks.
+
+Categories are set up under **Categories** on the server, or under
+Settings in the app. Most apps and websites get one on their own, in this
+order (the first that applies wins):
+
+1. what you **assigned**: a whole app or website, one tap or click, matched
+   in any case (so "Firefox" on the phone and "firefox" on the PC are one)
+2. **advanced rules**: regexes on the app (or website) and the window title,
+   optionally only on some devices, the deepest category wins
+3. **known apps**: a built-in list of apps, websites and Android packages
+   (`categories.catalog` in `server/src/categories.gleam`)
+4. what **Android** says an app is (game, social, video, maps, …), the app
+   sends it along
+
+Browser windows are split where the tab changes and each piece goes by its
+website first, then by the browser (so unknown sites are "Browsing", listed
+by their name to be moved). What still has no category is listed as
+**Unsorted** on top. Every category is rated productive, neutral or
+distracting; the dashboard shows the time of each, and Focus only counts
+productive stretches. A new server starts with built-in categories; rename,
+rate or delete them as you like, "Restore built-in" brings deleted ones back.
+Changes re-categorize everything already stored.
 
 API (all calls need `Authorization: Bearer <ADMIN_TOKEN>`):
 
@@ -86,23 +112,37 @@ API (all calls need `Authorization: Bearer <ADMIN_TOKEN>`):
   dashboard shows for the 7 days up to that date, as JSON (see
   `server/src/stats.gleam`). Without `date` it is today, without `device` all
   devices.
-- `GET  /api/categories` returns the rules (with their `patterns` and the
-  time of their category in the last 30 days), the devices and what has no
-  category. `POST /api/categories` takes `{"id"?, "name", "patterns": […],
-  "ignore_case", "devices": […]}` and adds or changes a rule, `DELETE
-  /api/categories/{id}` deletes one. `POST /api/categories/preview` takes the
-  same body and returns what it would match. `POST /api/categories/assign`
-  takes `{"id", "text"}` and adds the text as an exact pattern. Invalid rules
-  get a 422 with `{"error"}`.
+- `GET  /api/categories` returns the categories (with their `rating`, time
+  in the last 30 days, the `items` in them with their `source` and their
+  advanced `rules`), what is `unsorted` and the devices.
+  `POST /api/categories/save` takes `{"name", "rating", "old_name"?}` and
+  adds a category, rates it or renames `old_name`; `POST
+  /api/categories/delete` takes `{"name"}`; `POST /api/categories/assign`
+  takes `{"app", "category"}` (an app or website, `""` back to automatic);
+  `POST /api/categories/builtins` adds missing built-in ones. `POST
+  /api/rules` takes `{"id"?, "category", "patterns": […], "ignore_case",
+  "devices": […]}` and adds or changes an advanced rule, `DELETE
+  /api/rules/{id}` deletes one, `POST /api/rules/preview` takes the same
+  body and returns what it would match. Invalid input gets a 422 with
+  `{"error"}`.
+- `GET  /api/insights?date=…&days=…&device=…` returns the evaluation for the
+  same selection (see `server/src/insights.gleam`).
+- `GET  /api/timeline?date=…&days=…&device=…` returns screen time per app over
+  time (15 minutes for a day, hours for a week, days for longer) and the
+  sessions, see `server/src/timeline.gleam`.
 - `GET  /api/block?device=laptop&category=Work&since_ms=…&until_ms=…` returns
   the `apps` and window `titles` of that category in that time, cut to it
   (what a block of the activity view was made of). Without `device` it is all
   devices.
 - `GET  /api/devices/{device}/cursor` returns `{"cursor_ms": <end of newest event>}`
 - `POST /api/devices/{device}/events` takes `{"from_ms", "os", "events": [{"kind", "start_ms",
-  "duration_ms", "app", "title"}]}` and replaces everything the device did
+  "duration_ms", "app", "title", "tz_offset_min"}], "app_types": [{"app", "type"}]}` and replaces everything the device did
   from `from_ms` on. `os` (like `"NixOS 25.05 (Warbler)"`) is optional and
-  shown next to the device name. Agents resend the last 10 minutes each time, because
+  shown next to the device name, `tz_offset_min` (the UTC offset then) is
+  optional too, like `app_types` (what phones say their apps are). `kind` is `window` (screen time), `web` (a browser tab),
+  or from phones `screen` (screen on), `unlock`, `notification` (both without
+  duration) and `audio` (media playing), see `shared/src/shared.gleam`.
+  Agents resend the last 10 minutes each time, because
   ActivityWatch still corrects them (e.g. AFK detection).
 
 ## Devices
@@ -162,9 +202,19 @@ On the first sync the agent uploads the last 30 days.
 
 ### Android
 
-`android/` is a small Kotlin app that does the agent's job on a phone. It reads
-Android's usage events (which app was in the foreground, cut off when the screen
-turns off) and uploads them every 15 minutes with the same API. The app name is
+`android/` is a small Kotlin app that does the agent's job on a phone. Every 15
+minutes, online or not, it reads Android's usage events into its own database:
+which app was in the foreground (cut off when the screen turns off), when the
+screen was on and when the phone was unlocked. With notification access it also
+records when notifications arrive (only the app, not what they say) and when
+an app plays media. It keeps all of it for 400 days, Android itself forgets
+usage events after about a week.
+
+Uploading is separate: whenever the server can be reached (e.g. only at home
+through a VPN), the app uploads everything that changed since the last upload,
+however long ago that was. Settings shows what is stored and what isn't
+uploaded yet. Home screen apps (any app that can be the launcher) don't count
+as app use, only as the screen being on. The app name is
 sent as `app` and the package name (e.g. `org.mozilla.firefox`) as `title`, so
 category regexes can match either. Browser tabs are not tracked.
 
@@ -176,19 +226,18 @@ gradle wrapper   # once, creates ./gradlew
 ./gradlew assembleRelease   # app/build/outputs/apk/release/app-release.apk
 ```
 
-In the app, grant usage access, then add the server URL, `ADMIN_TOKEN` and a
+In the app, grant usage access (and optionally notification access), then add the server URL, `ADMIN_TOKEN` and a
 device name under **Settings**, where **Test connection** checks them before
 saving. The app has three tabs:
 
-- **Overview**: the server's dashboard for all your devices, with the same
+- **Overview**: the server's dashboard for all your devices, with its evaluation and the same
   device, day and range selection.
-- **Timeline**: the activity view, a page per device (or day) to swipe
-  between, the day from top to bottom. Pinch to zoom, tap a block to open a
-  page with its apps and window titles.
+- **Timeline**: screen time per app as stacked areas over the day, week or
+  month (drag over it to see a moment), and the sessions with their apps.
 - **Settings**: the server, syncing, usage access.
 
 Without a server, Overview shows this phone's last 7 days. Android keeps usage
-events only for about a week, so the first sync uploads less than 30 days.
+events only for about a week, so the first collect gets less than 30 days.
 
 ## Desktop
 

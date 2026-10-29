@@ -1,7 +1,9 @@
 //// The queries are in src/sql/*.sql, parrot turns them into src/server/sql.gleam
 //// (see README.md). This module runs them with sqlight.
 
+import browsing
 import categories.{type Rule, Rule}
+import gleam/bool
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/json
@@ -26,13 +28,275 @@ pub fn migrate(conn: Connection) -> Result(Nil, sqlight.Error) {
     with: [],
     expecting: decode.field(0, decode.int, decode.success),
   ))
-  // the default categories are added once, so deleted ones stay deleted
-  case version {
-    [0] -> {
-      use _ <- result.try(add_rules(conn, categories.defaults))
-      sqlight.exec("PRAGMA user_version = 1", conn)
-    }
+  use _ <- result.try(case version {
+    [version] if version < 2 -> more_kinds(conn, schema)
     _ -> Ok(Nil)
+  })
+  use _ <- result.try(case version {
+    [version] if version < 3 -> categories_v3(conn, version == 0)
+    _ -> Ok(Nil)
+  })
+  sqlight.exec("PRAGMA user_version = 3", conn)
+}
+
+/// Version 3: categories with ratings, assigned apps, app types from phones
+/// and browser windows split by website. The built-in categories are added
+/// once, so deleted ones stay deleted. Rules that are unchanged copies of
+/// the old defaults go, the catalog of known apps does that now.
+fn categories_v3(conn: Connection, new: Bool) -> Result(Nil, sqlight.Error) {
+  use columns <- result.try(sqlight.query(
+    "SELECT name FROM pragma_table_info('events')",
+    on: conn,
+    with: [],
+    expecting: decode.field(0, decode.string, decode.success),
+  ))
+  use _ <- result.try(case list.contains(columns, "site") {
+    True -> Ok(Nil)
+    False ->
+      sqlight.exec(
+        "ALTER TABLE events ADD COLUMN site TEXT NOT NULL DEFAULT ''",
+        conn,
+      )
+  })
+  use _ <- result.try(add_builtin_categories(conn))
+  use <- bool.guard(new, Ok(Nil))
+  use rules <- result.try(rules(conn))
+  use _ <- result.try(
+    list.try_each(rules, fn(rule) {
+      let old_default =
+        rule.ignore_case
+        && rule.devices == []
+        && list.contains(categories.old_defaults, #(rule.name, rule.regex))
+      case old_default {
+        True -> delete_rule(conn, rule.id)
+        False -> Ok(Nil)
+      }
+    }),
+  )
+  // categories that only existed as rule names
+  use defined <- result.try(category_list(conn))
+  use _ <- result.try(
+    list.map(rules, fn(rule) { rule.name })
+    |> list.unique
+    |> list.filter(fn(name) { !list.any(defined, fn(c) { c.name == name }) })
+    |> list.try_each(save_category(conn, _, categories.Neutral)),
+  )
+  use devices <- result.try(device_names(conn))
+  list.try_each(devices, split_stored(conn, _, 0))
+}
+
+/// Adds the built-in categories that don't exist (by name).
+pub fn add_builtin_categories(conn: Connection) -> Result(Nil, sqlight.Error) {
+  use defined <- result.try(category_list(conn))
+  list.filter(categories.builtins, fn(builtin) {
+    !list.any(defined, fn(c) { c.builtin == builtin.0 || c.name == builtin.0 })
+  })
+  |> list.try_each(fn(builtin) {
+    exec(
+      conn,
+      sql.save_category_def(
+        name: builtin.0,
+        rating: categories.rating_to_string(builtin.1),
+        builtin: builtin.0,
+      ),
+    )
+  })
+}
+
+/// Splits the stored browser windows of `device` from `since_ms` on by
+/// their tabs, see browsing.split.
+fn split_stored(
+  conn: Connection,
+  device: String,
+  since_ms: Int,
+) -> Result(Nil, sqlight.Error) {
+  let load = fn(kind) {
+    query(conn, sql.device_events(device:, kind:, since_ms:))
+    |> result.map(
+      list.filter_map(_, fn(row) {
+        use kind <- result.map(shared.kind_from_string(row.kind))
+        shared.Event(
+          kind:,
+          start_ms: row.start_ms,
+          duration_ms: row.duration_ms,
+          app: row.app,
+          title: row.title,
+          tz_offset_min: row.tz_offset_min,
+        )
+      }),
+    )
+  }
+  use windows <- result.try(load("window"))
+  use tabs <- result.try(load("web"))
+  use <- bool.guard(tabs == [], Ok(Nil))
+  use categorize <- result.try(categorizer(conn))
+  use <- transaction(conn)
+  use _ <- result.try(exec(
+    conn,
+    sql.delete_device_windows_from(device:, since_ms:),
+  ))
+  browsing.split(list.append(windows, tabs))
+  |> list.filter(fn(entry) { { entry.0 }.kind == shared.Window })
+  |> list.try_each(insert(conn, device, categorize, _))
+}
+
+/// What categories come from now.
+pub fn setup(conn: Connection) -> Result(categories.Setup, sqlight.Error) {
+  use defined <- result.try(category_list(conn))
+  use rules <- result.try(rules(conn))
+  use assigned <- result.try(query(conn, sql.list_assigned()))
+  use types <- result.map(query(conn, sql.list_app_types()))
+  categories.Setup(
+    categories: defined,
+    rules:,
+    assigned: list.map(assigned, fn(row) {
+      #(string.lowercase(row.app), row.category)
+    })
+      |> dict.from_list,
+    types: list.map(types, fn(row) { #(string.lowercase(row.app), row.type_) })
+      |> dict.from_list,
+  )
+}
+
+pub fn categorizer(
+  conn: Connection,
+) -> Result(
+  fn(String, String, String, String) -> categories.Match,
+  sqlight.Error,
+) {
+  setup(conn) |> result.map(categories.categorizer)
+}
+
+fn insert(
+  conn: Connection,
+  device: String,
+  categorize: fn(String, String, String, String) -> categories.Match,
+  entry: #(shared.Event, String),
+) -> Result(Nil, sqlight.Error) {
+  let #(e, site) = entry
+  exec(
+    conn,
+    sql.insert_event(
+      device:,
+      kind: shared.kind_to_string(e.kind),
+      start_ms: e.start_ms,
+      duration_ms: e.duration_ms,
+      app: e.app,
+      title: e.title,
+      category: categorize(device, e.app, e.title, site).category,
+      tz_offset_min: e.tz_offset_min,
+      site:,
+    ),
+  )
+}
+
+/// The categories in the order of their colors.
+pub fn category_list(
+  conn: Connection,
+) -> Result(List(categories.Category), sqlight.Error) {
+  use rows <- result.map(query(conn, sql.list_category_defs()))
+  use row <- list.map(rows)
+  categories.Category(
+    row.name,
+    categories.rating_from_string(row.rating)
+      |> result.unwrap(categories.Neutral),
+    row.builtin,
+  )
+}
+
+/// Adds a category, or changes its rating.
+pub fn save_category(
+  conn: Connection,
+  name: String,
+  rating: categories.Rating,
+) -> Result(Nil, sqlight.Error) {
+  exec(
+    conn,
+    sql.save_category_def(
+      name:,
+      rating: categories.rating_to_string(rating),
+      builtin: "",
+    ),
+  )
+}
+
+/// Renames a category with its rules and assigned apps.
+pub fn rename_category(
+  conn: Connection,
+  old_name: String,
+  new_name: String,
+) -> Result(Nil, sqlight.Error) {
+  use <- transaction(conn)
+  use _ <- result.try(exec(conn, sql.rename_category_def(old_name:, new_name:)))
+  use _ <- result.try(exec(
+    conn,
+    sql.rename_category_rules(old_name:, new_name:),
+  ))
+  exec(conn, sql.rename_category_assigned(old_name:, new_name:))
+}
+
+/// Deletes a category with its rules, its apps go back to automatic.
+pub fn delete_category(
+  conn: Connection,
+  name: String,
+) -> Result(Nil, sqlight.Error) {
+  use <- transaction(conn)
+  use _ <- result.try(exec(conn, sql.delete_category_def(name:)))
+  use _ <- result.try(exec(conn, sql.delete_category_rules(name:)))
+  exec(conn, sql.delete_category_assigned(name:))
+}
+
+/// Puts an app or website into a category by hand, "" goes back to
+/// automatic.
+pub fn assign(
+  conn: Connection,
+  app: String,
+  category: String,
+) -> Result(Nil, sqlight.Error) {
+  case category {
+    "" -> exec(conn, sql.unassign(app:))
+    category -> exec(conn, sql.assign(app:, category:))
+  }
+}
+
+/// Version 2: events of phones (screen, unlock, notification, audio) with
+/// their UTC offset, and when devices last uploaded. SQLite can't change a
+/// CHECK, so the events table is copied into a new one.
+fn more_kinds(conn: Connection, schema: String) -> Result(Nil, sqlight.Error) {
+  use events <- result.try(sqlight.query(
+    "SELECT sql FROM sqlite_schema WHERE name = 'events'",
+    on: conn,
+    with: [],
+    expecting: decode.field(0, decode.string, decode.success),
+  ))
+  use _ <- result.try(case events {
+    [sql] ->
+      case string.contains(sql, "'unlock'") {
+        True -> Ok(Nil)
+        False -> {
+          use <- transaction(conn)
+          sqlight.exec("ALTER TABLE events RENAME TO events_v1;
+            DROP INDEX events_start;
+            DROP INDEX events_app;" <> schema <> "INSERT INTO events (device, kind, start_ms, duration_ms, app, title, category)
+            SELECT device, kind, start_ms, duration_ms, app, title, category FROM events_v1;
+            DROP TABLE events_v1;", conn)
+        }
+      }
+    _ -> Ok(Nil)
+  })
+  use columns <- result.try(sqlight.query(
+    "SELECT name FROM pragma_table_info('devices')",
+    on: conn,
+    with: [],
+    expecting: decode.field(0, decode.string, decode.success),
+  ))
+  case list.contains(columns, "last_upload_ms") {
+    True -> Ok(Nil)
+    False ->
+      sqlight.exec(
+        "ALTER TABLE devices ADD COLUMN last_upload_ms INTEGER NOT NULL DEFAULT 0",
+        conn,
+      )
   }
 }
 
@@ -107,14 +371,20 @@ pub fn cursor(conn: Connection, device: String) -> Result(Int, sqlight.Error) {
 
 /// Replaces everything `device` did from `upload.from_ms` on. Events that
 /// started before are cut off there, ActivityWatch sends their rest again.
-/// `category` gets the device, app and title of an event. The device's OS is
-/// kept unless the upload has none.
+/// Browser windows are split by their tabs (browsing.split) and every event
+/// gets its category, with the app types of the upload. The device's OS is
+/// kept unless the upload has none, and the time of the upload is noted.
 pub fn replace_events(
   conn: Connection,
   device: String,
   upload: shared.Upload,
-  category: fn(String, String, String) -> String,
 ) -> Result(Nil, sqlight.Error) {
+  use _ <- result.try(
+    list.try_each(upload.app_types, fn(entry) {
+      exec(conn, sql.set_app_type(app: entry.0, type_: entry.1))
+    }),
+  )
+  use categorize <- result.try(categorizer(conn))
   use <- transaction(conn)
   use _ <- result.try(exec(
     conn,
@@ -124,24 +394,9 @@ pub fn replace_events(
     conn,
     sql.cut_events_at(device:, from_ms: upload.from_ms),
   ))
-  use _ <- result.try(case upload.os {
-    "" -> Ok(Nil)
-    os -> exec(conn, sql.set_device_os(device:, os:))
-  })
-  list.try_each(upload.events, fn(e) {
-    exec(
-      conn,
-      sql.insert_event(
-        device:,
-        kind: shared.kind_to_string(e.kind),
-        start_ms: e.start_ms,
-        duration_ms: e.duration_ms,
-        app: e.app,
-        title: e.title,
-        category: category(device, e.app, e.title),
-      ),
-    )
-  })
+  use _ <- result.try(exec(conn, sql.device_uploaded(device:, os: upload.os)))
+  browsing.split(upload.events)
+  |> list.try_each(insert(conn, device, categorize, _))
 }
 
 pub fn rules(conn: Connection) -> Result(List(Rule), sqlight.Error) {
@@ -175,30 +430,17 @@ pub fn save_rule(
   )
 }
 
-/// Adds the rules whose category doesn't exist yet.
-pub fn add_rules(
-  conn: Connection,
-  new: List(Rule),
-) -> Result(Nil, sqlight.Error) {
-  use existing <- result.try(rules(conn))
-  let names = list.map(existing, fn(rule) { rule.name })
-  list.filter(new, fn(rule) { !list.contains(names, rule.name) })
-  |> list.try_each(save_rule(conn, option.None, _))
-}
-
 pub fn delete_rule(conn: Connection, id: Int) -> Result(Nil, sqlight.Error) {
   exec(conn, sql.delete_rule(id:))
 }
 
 /// Puts all stored events into categories again, after the rules changed.
-pub fn recategorize(
-  conn: Connection,
-  category: fn(String, String, String) -> String,
-) -> Result(Nil, sqlight.Error) {
+pub fn recategorize(conn: Connection) -> Result(Nil, sqlight.Error) {
+  use categorize <- result.try(categorizer(conn))
   use rows <- result.try(query(conn, sql.event_categories()))
   use <- transaction(conn)
   use row <- list.try_each(rows)
-  case category(row.device, row.app, row.title) {
+  case categorize(row.device, row.app, row.title, row.site).category {
     same if same == row.category -> Ok(Nil)
     category ->
       exec(
@@ -208,6 +450,7 @@ pub fn recategorize(
           device: row.device,
           app: row.app,
           title: row.title,
+          site: row.site,
         ),
       )
   }
@@ -234,14 +477,26 @@ pub fn device_systems(
   conn: Connection,
 ) -> Result(dict.Dict(String, String), sqlight.Error) {
   use rows <- result.map(query(conn, sql.device_systems()))
-  list.map(rows, fn(row) { #(row.name, row.os) }) |> dict.from_list
+  list.filter(rows, fn(row) { row.os != "" })
+  |> list.map(fn(row) { #(row.name, row.os) })
+  |> dict.from_list
+}
+
+/// When each device last uploaded (Unix ms), 0 for before the server
+/// noted it.
+pub fn last_uploads(
+  conn: Connection,
+) -> Result(dict.Dict(String, Int), sqlight.Error) {
+  use rows <- result.map(query(conn, sql.device_systems()))
+  list.map(rows, fn(row) { #(row.name, row.last_upload_ms) }) |> dict.from_list
 }
 
 /// What the dashboard shows: the `days` days up to and including `date`
 /// (local dates like "2026-10-26") of one device, or of all devices if
 /// `device` is "". They are the time from `since_ms` to `until_ms`. The
 /// period of the same length before starts at `previous_since_ms` and ends on
-/// `previous_date`, the one after ends on `next_date`.
+/// `previous_date`, the one after ends on `next_date`. `now_ms` is when the
+/// filter was made.
 pub type Filter {
   Filter(
     date: String,
@@ -254,6 +509,7 @@ pub type Filter {
     previous_date: String,
     next_date: String,
     today: String,
+    now_ms: Int,
   )
 }
 
@@ -276,6 +532,7 @@ pub fn filter(
     previous_date: row.previous_date,
     next_date: row.next_date,
     today: row.today,
+    now_ms: row.now_ms,
   )
 }
 
@@ -480,18 +737,20 @@ pub fn category_totals(
 }
 
 /// Usage of an app and title on a device, `kind` is "window" or "web".
+/// Screen time of an app, title and site (the website of a browser window,
+/// "" if none) on a device.
 pub type Recent {
-  Recent(device: String, kind: String, app: String, title: String, ms: Int)
+  Recent(device: String, app: String, title: String, site: String, ms: Int)
 }
 
-/// Everything used since `since_ms`, summed per device, kind, app and title.
+/// Screen time since `since_ms`, summed per device, app, title and site.
 pub fn recent_usage(
   conn: Connection,
   since_ms: Int,
 ) -> Result(List(Recent), sqlight.Error) {
   use rows <- result.map(query(conn, sql.recent_usage(since_ms:)))
   use row <- list.map(rows)
-  Recent(row.device, row.kind, row.app, row.title, row.ms)
+  Recent(row.device, row.app, row.title, row.site, row.ms)
 }
 
 /// Apps and domains that took the most time without a category.
@@ -518,4 +777,63 @@ pub fn uncategorized_titles(
   ))
   use row <- list.map(rows)
   Usage(row.name, row.detail, row.ms)
+}
+
+/// Everything that happened from `since_ms` to `until_ms` on `device`, or on
+/// all devices if it is "", sorted by start.
+pub fn activity(
+  conn: Connection,
+  since_ms: Int,
+  until_ms: Int,
+  device: String,
+) -> Result(List(sql.Activity), sqlight.Error) {
+  query(conn, sql.activity(since_ms:, until_ms:, device:))
+}
+
+/// Screen time from `since_ms` to `until_ms` as intervals sorted by start.
+pub fn screen_intervals(
+  conn: Connection,
+  since_ms: Int,
+  until_ms: Int,
+  device: String,
+) -> Result(List(#(Int, Int)), sqlight.Error) {
+  use rows <- result.map(query(
+    conn,
+    sql.screen_intervals(since_ms:, until_ms:, device:),
+  ))
+  list.map(rows, fn(row) { #(row.start_ms, row.end_ms) })
+}
+
+/// Screen time of a local date and hour (when it started) and a category
+/// or app, summed over the devices.
+pub type Daily {
+  Daily(date: String, hour: Int, name: String, ms: Int)
+}
+
+/// Per local date, hour and category.
+pub fn daily_categories(
+  conn: Connection,
+  since_ms: Int,
+  until_ms: Int,
+  device: String,
+) -> Result(List(Daily), sqlight.Error) {
+  use rows <- result.map(query(
+    conn,
+    sql.daily_categories(since_ms:, until_ms:, device:),
+  ))
+  list.map(rows, fn(row) { Daily(row.date, row.hour, row.category, row.ms) })
+}
+
+/// Per local date, hour and app.
+pub fn daily_apps(
+  conn: Connection,
+  since_ms: Int,
+  until_ms: Int,
+  device: String,
+) -> Result(List(Daily), sqlight.Error) {
+  use rows <- result.map(query(
+    conn,
+    sql.daily_apps(since_ms:, until_ms:, device:),
+  ))
+  list.map(rows, fn(row) { Daily(row.date, row.hour, row.app, row.ms) })
 }

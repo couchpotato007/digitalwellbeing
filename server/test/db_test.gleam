@@ -1,6 +1,7 @@
 import categories.{Rule}
 import db
 import gleam/dict
+import gleam/dynamic/decode
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -15,13 +16,11 @@ fn with_db(run: fn(sqlight.Connection) -> a) -> a {
 }
 
 fn upload(conn, device, events) {
-  let assert Ok(rules) = db.rules(conn)
   let assert Ok(Nil) =
     db.replace_events(
       conn,
       device,
-      shared.Upload(from_ms: 0, os: "", events:),
-      categories.categorizer(rules),
+      shared.Upload(from_ms: 0, os: "", events:, app_types: []),
     )
   Nil
 }
@@ -40,20 +39,21 @@ fn now_ms() {
   filter.since_ms + 3_600_000
 }
 
-pub fn migrate_adds_defaults_once_test() {
+pub fn migrate_adds_builtins_once_test() {
   use conn <- with_db
+  let assert Ok(defined) = db.category_list(conn)
+  assert list.length(defined) == list.length(categories.builtins)
   let assert Ok(rules) = db.rules(conn)
-  assert list.length(rules) == list.length(categories.defaults)
+  assert rules == []
 
-  let assert [first, ..] = rules
-  let assert Ok(Nil) = db.delete_rule(conn, first.id)
+  let assert Ok(Nil) = db.delete_category(conn, "Shopping")
   let assert Ok(Nil) = db.migrate(conn)
-  let assert Ok(rules) = db.rules(conn)
-  assert list.length(rules) == list.length(categories.defaults) - 1
+  let assert Ok(defined) = db.category_list(conn)
+  assert list.length(defined) == list.length(categories.builtins) - 1
 
-  let assert Ok(Nil) = db.add_rules(conn, categories.defaults)
-  let assert Ok(rules) = db.rules(conn)
-  assert list.length(rules) == list.length(categories.defaults)
+  let assert Ok(Nil) = db.add_builtin_categories(conn)
+  let assert Ok(defined) = db.category_list(conn)
+  assert list.length(defined) == list.length(categories.builtins)
 }
 
 pub fn save_rule_test() {
@@ -76,37 +76,45 @@ pub fn ingest_and_recategorize_test() {
   use conn <- with_db
   let start = now_ms()
   upload(conn, "laptop", [
-    Event(shared.Window, start, 600_000, "Code", "db.gleam"),
-    Event(shared.Window, start + 600_000, 300_000, "firefox", "Some page"),
-    Event(shared.Web, start + 600_000, 300_000, "example.org", "Some page"),
+    Event(shared.Window, start, 600_000, "Code", "db.gleam", None),
+    Event(shared.Window, start + 600_000, 300_000, "firefox", "Some page", None),
+    Event(
+      shared.Web,
+      start + 600_000,
+      300_000,
+      "example.org",
+      "Some page",
+      None,
+    ),
   ])
   let assert Ok(cursor) = db.cursor(conn, "laptop")
   assert cursor == start + 900_000
 
+  // an unknown website in a known browser
   assert category_of(conn, "Code")
     == [
       db.Usage("Work > Programming", "", 600_000),
-      db.Usage("Uncategorized", "", 300_000),
+      db.Usage("Browsing", "", 300_000),
     ]
 
-  let assert Ok(Nil) =
-    db.save_rule(conn, None, Rule(0, "Browsing", "firefox", True, []))
-  let assert Ok(rules) = db.rules(conn)
-  let assert Ok(Nil) = db.recategorize(conn, categories.categorizer(rules))
+  let assert Ok(Nil) = db.assign(conn, "example.org", "Work > Office")
+  let assert Ok(Nil) = db.recategorize(conn)
   assert category_of(conn, "firefox")
     == [
       db.Usage("Work > Programming", "", 600_000),
-      db.Usage("Browsing", "", 300_000),
+      db.Usage("Work > Office", "", 300_000),
     ]
 }
 
 pub fn dashboard_queries_test() {
   use conn <- with_db
   let start = now_ms()
-  upload(conn, "laptop", [Event(shared.Window, start, 60_000, "Code", "a")])
+  upload(conn, "laptop", [
+    Event(shared.Window, start, 60_000, "Code", "a", None),
+  ])
   upload(conn, "desktop", [
-    Event(shared.Window, start + 30_000, 60_000, "Code", "b"),
-    Event(shared.Web, start + 30_000, 60_000, "example.org", "c"),
+    Event(shared.Window, start + 30_000, 60_000, "Code", "b", None),
+    Event(shared.Web, start + 30_000, 60_000, "example.org", "c", None),
   ])
   let assert Ok(today) = db.filter(conn, "", 1, "")
   let assert Ok(report) = stats.load(conn, today)
@@ -162,16 +170,13 @@ pub fn dashboard_queries_test() {
 
 pub fn device_os_test() {
   use conn <- with_db
-  let assert Ok(rules) = db.rules(conn)
-  let category = categories.categorizer(rules)
-  let event = Event(shared.Window, now_ms(), 60_000, "Code", "a")
+  let event = Event(shared.Window, now_ms(), 60_000, "Code", "a", None)
   let send = fn(os) {
     let assert Ok(Nil) =
       db.replace_events(
         conn,
         "laptop",
-        shared.Upload(from_ms: 0, os:, events: [event]),
-        category,
+        shared.Upload(from_ms: 0, os:, events: [event], app_types: []),
       )
     Nil
   }
@@ -195,9 +200,9 @@ pub fn block_test() {
   use conn <- with_db
   let start = now_ms()
   upload(conn, "laptop", [
-    Event(shared.Window, start, 600_000, "Code", "db.gleam"),
-    Event(shared.Window, start + 600_000, 300_000, "Code", "web.gleam"),
-    Event(shared.Window, start + 900_000, 300_000, "Unknown thing", "x"),
+    Event(shared.Window, start, 600_000, "Code", "db.gleam", None),
+    Event(shared.Window, start + 600_000, 300_000, "Code", "web.gleam", None),
+    Event(shared.Window, start + 900_000, 300_000, "Unknown thing", "x", None),
   ])
   let assert Ok(category) = category_of(conn, "Code") |> list.first
   // the block starts in the middle of the first event
@@ -221,4 +226,112 @@ pub fn invalid_date_is_today_test() {
   assert week.first_date == "2026-03-25"
   assert week.previous_date == "2026-03-24"
   assert week.next_date == "2026-04-07"
+}
+
+pub fn migrate_from_version_1_test() {
+  use conn <- sqlight.with_connection(":memory:")
+  let assert Ok(Nil) =
+    sqlight.exec(
+      "CREATE TABLE events (
+        device TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('window', 'web')),
+        start_ms INTEGER NOT NULL,
+        duration_ms INTEGER NOT NULL CHECK (duration_ms >= 0),
+        app TEXT NOT NULL,
+        title TEXT NOT NULL,
+        category TEXT NOT NULL,
+        PRIMARY KEY (device, kind, start_ms)
+      ) WITHOUT ROWID;
+      CREATE INDEX events_start ON events(start_ms);
+      CREATE INDEX events_app ON events(device, app, title);
+      CREATE TABLE devices (name TEXT PRIMARY KEY, os TEXT NOT NULL) WITHOUT ROWID;
+      CREATE TABLE categories (id INTEGER PRIMARY KEY, name TEXT NOT NULL, regex TEXT NOT NULL,
+        ignore_case BOOLEAN NOT NULL, devices TEXT NOT NULL);
+      INSERT INTO categories VALUES (1, 'Shopping', 'amazon|ebay|etsy|aliexpress|\\btemu\\b', 1, '[]');
+      INSERT INTO categories VALUES (2, 'Studying', 'anki', 1, '[]');
+      INSERT INTO events VALUES ('laptop', 'window', 1000, 60000, 'Code', 'a', 'Work');
+      INSERT INTO events VALUES ('laptop', 'window', 100000, 60000, 'firefox', 'b', 'Work');
+      INSERT INTO events VALUES ('laptop', 'web', 120000, 10000, 'github.com', 'b', 'Work');
+      INSERT INTO devices VALUES ('laptop', 'NixOS');
+      PRAGMA user_version = 1;",
+      conn,
+    )
+  let assert Ok(Nil) = db.migrate(conn)
+  // the unchanged old default went, the catalog does it now, the own rule
+  // stays and its category exists
+  let assert Ok([studying]) = db.rules(conn)
+  assert studying.name == "Studying"
+  let assert Ok(defined) = db.category_list(conn)
+  assert list.length(defined) == list.length(categories.builtins) + 1
+  // the browser window was split by its tab
+  let assert Ok(rows) =
+    sqlight.query(
+      "SELECT start_ms, site, category FROM events WHERE kind = 'window' AND app = 'firefox' ORDER BY start_ms",
+      on: conn,
+      with: [],
+      expecting: {
+        use start <- decode.field(0, decode.int)
+        use site <- decode.field(1, decode.string)
+        use category <- decode.field(2, decode.string)
+        decode.success(#(start, site, category))
+      },
+    )
+  assert rows
+    == [
+      #(100_000, "", "Browsing"),
+      #(120_000, "github.com", "Work > Programming"),
+      #(130_000, "", "Browsing"),
+    ]
+  let assert Ok(160_000) = db.cursor(conn, "laptop")
+  let assert Ok(systems) = db.device_systems(conn)
+  assert dict.to_list(systems) == [#("laptop", "NixOS")]
+  // the new kinds fit
+  upload(conn, "phone", [
+    Event(shared.Unlock, now_ms(), 0, "", "", Some(60)),
+  ])
+  let assert Ok(["laptop", "phone"]) = db.device_names(conn)
+  // and migrating again changes nothing
+  let assert Ok(Nil) = db.migrate(conn)
+  let assert Ok(["laptop", "phone"]) = db.device_names(conn)
+}
+
+pub fn phone_kinds_are_not_screen_time_test() {
+  use conn <- with_db
+  let start = now_ms()
+  upload(conn, "phone", [
+    Event(
+      shared.Window,
+      start,
+      60_000,
+      "Signal",
+      "org.thoughtcrime.securesms",
+      Some(60),
+    ),
+    Event(shared.Screen, start - 5000, 70_000, "", "", Some(60)),
+    Event(shared.Unlock, start - 1000, 0, "", "", Some(60)),
+    Event(
+      shared.Notification,
+      start - 2000,
+      0,
+      "Signal",
+      "org.thoughtcrime.securesms",
+      Some(60),
+    ),
+    Event(
+      shared.Audio,
+      start,
+      600_000,
+      "Spotify",
+      "com.spotify.music",
+      Some(60),
+    ),
+  ])
+  let assert Ok(today) = db.filter(conn, "", 1, "")
+  let assert Ok(report) = stats.load(conn, today)
+  assert report.total_ms == 60_000
+  let assert Ok([signal]) = db.apps(conn, today)
+  assert signal.name == "Signal"
+  let assert Ok(uploads) = db.last_uploads(conn)
+  let assert Ok(last) = dict.get(uploads, "phone")
+  assert last > 0
 }

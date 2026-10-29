@@ -78,25 +78,168 @@ pub fn category_totals_decoder() -> decode.Decoder(CategoryTotals) {
 }
 
 pub type RecentUsage {
-  RecentUsage(device: String, kind: String, app: String, title: String, ms: Int)
+  RecentUsage(device: String, app: String, title: String, site: String, ms: Int)
 }
 
 pub fn recent_usage(since_ms since_ms: Int) {
   let sql =
-    "SELECT device, kind, app, title, CAST(sum(duration_ms) AS INTEGER) AS ms
+    "SELECT device, app, title, site, CAST(sum(duration_ms) AS INTEGER) AS ms
 FROM events
-WHERE start_ms >= ?1
-GROUP BY device, kind, app, title"
+WHERE kind = 'window' AND start_ms >= ?1
+GROUP BY device, app, title, site"
   #(sql, [dev.ParamInt(since_ms)], recent_usage_decoder())
 }
 
 pub fn recent_usage_decoder() -> decode.Decoder(RecentUsage) {
   use device <- decode.field(0, decode.string)
-  use kind <- decode.field(1, decode.string)
-  use app <- decode.field(2, decode.string)
-  use title <- decode.field(3, decode.string)
+  use app <- decode.field(1, decode.string)
+  use title <- decode.field(2, decode.string)
+  use site <- decode.field(3, decode.string)
   use ms <- decode.field(4, decode.int)
-  decode.success(RecentUsage(device:, kind:, app:, title:, ms:))
+  decode.success(RecentUsage(device:, app:, title:, site:, ms:))
+}
+
+pub type ListCategoryDefs {
+  ListCategoryDefs(name: String, rating: String, builtin: String)
+}
+
+pub fn list_category_defs() {
+  let sql =
+    "SELECT name, rating, builtin
+FROM category_defs
+ORDER BY id"
+  #(sql, [], list_category_defs_decoder())
+}
+
+pub fn list_category_defs_decoder() -> decode.Decoder(ListCategoryDefs) {
+  use name <- decode.field(0, decode.string)
+  use rating <- decode.field(1, decode.string)
+  use builtin <- decode.field(2, decode.string)
+  decode.success(ListCategoryDefs(name:, rating:, builtin:))
+}
+
+pub fn save_category_def(
+  name name: String,
+  rating rating: String,
+  builtin builtin: String,
+) {
+  let sql =
+    "INSERT INTO category_defs (name, rating, builtin)
+VALUES (?1, ?2, ?3)
+ON CONFLICT (name) DO UPDATE SET rating = excluded.rating"
+  #(sql, [
+    dev.ParamString(name),
+    dev.ParamString(rating),
+    dev.ParamString(builtin),
+  ])
+}
+
+pub fn rename_category_def(
+  new_name new_name: String,
+  old_name old_name: String,
+) {
+  let sql =
+    "UPDATE category_defs SET name = ?1
+WHERE name = ?2"
+  #(sql, [dev.ParamString(new_name), dev.ParamString(old_name)])
+}
+
+pub fn rename_category_rules(
+  new_name new_name: String,
+  old_name old_name: String,
+) {
+  let sql =
+    "UPDATE categories SET name = ?1
+WHERE name = ?2"
+  #(sql, [dev.ParamString(new_name), dev.ParamString(old_name)])
+}
+
+pub fn rename_category_assigned(
+  new_name new_name: String,
+  old_name old_name: String,
+) {
+  let sql =
+    "UPDATE assigned_apps SET category = ?1
+WHERE category = ?2"
+  #(sql, [dev.ParamString(new_name), dev.ParamString(old_name)])
+}
+
+pub fn delete_category_def(name name: String) {
+  let sql =
+    "DELETE FROM category_defs
+WHERE name = ?1"
+  #(sql, [dev.ParamString(name)])
+}
+
+pub fn delete_category_rules(name name: String) {
+  let sql =
+    "DELETE FROM categories
+WHERE name = ?1"
+  #(sql, [dev.ParamString(name)])
+}
+
+pub fn delete_category_assigned(name name: String) {
+  let sql =
+    "DELETE FROM assigned_apps
+WHERE category = ?1"
+  #(sql, [dev.ParamString(name)])
+}
+
+pub type ListAssigned {
+  ListAssigned(app: String, category: String)
+}
+
+pub fn list_assigned() {
+  let sql =
+    "SELECT app, category
+FROM assigned_apps"
+  #(sql, [], list_assigned_decoder())
+}
+
+pub fn list_assigned_decoder() -> decode.Decoder(ListAssigned) {
+  use app <- decode.field(0, decode.string)
+  use category <- decode.field(1, decode.string)
+  decode.success(ListAssigned(app:, category:))
+}
+
+pub fn assign(app app: String, category category: String) {
+  let sql =
+    "INSERT INTO assigned_apps (app, category)
+VALUES (?1, ?2)
+ON CONFLICT (app) DO UPDATE SET category = excluded.category"
+  #(sql, [dev.ParamString(app), dev.ParamString(category)])
+}
+
+pub fn unassign(app app: String) {
+  let sql =
+    "DELETE FROM assigned_apps
+WHERE app = ?1"
+  #(sql, [dev.ParamString(app)])
+}
+
+pub type ListAppTypes {
+  ListAppTypes(app: String, type_: String)
+}
+
+pub fn list_app_types() {
+  let sql =
+    "SELECT app, type
+FROM app_types"
+  #(sql, [], list_app_types_decoder())
+}
+
+pub fn list_app_types_decoder() -> decode.Decoder(ListAppTypes) {
+  use app <- decode.field(0, decode.string)
+  use type_ <- decode.field(1, decode.string)
+  decode.success(ListAppTypes(app:, type_:))
+}
+
+pub fn set_app_type(app app: String, type_ type_: String) {
+  let sql =
+    "INSERT INTO app_types (app, type)
+VALUES (?1, ?2)
+ON CONFLICT (app) DO UPDATE SET type = excluded.type"
+  #(sql, [dev.ParamString(app), dev.ParamString(type_)])
 }
 
 pub type Range {
@@ -109,6 +252,7 @@ pub type Range {
     previous_date: String,
     next_date: String,
     today: String,
+    now_ms: Int,
   )
 }
 
@@ -123,7 +267,8 @@ SELECT
   CAST(unixepoch(date, printf('-%d days', 2 * n - 1), 'utc') * 1000 AS INTEGER) AS previous_since_ms,
   CAST(date(date, printf('-%d days', n)) AS TEXT) AS previous_date,
   CAST(date(date, printf('+%d days', n)) AS TEXT) AS next_date,
-  CAST(date('now', 'localtime') AS TEXT) AS today
+  CAST(date('now', 'localtime') AS TEXT) AS today,
+  CAST(unixepoch('subsec') * 1000 AS INTEGER) AS now_ms
 FROM (
   SELECT coalesce(date(CAST(?1 AS TEXT)), date('now', 'localtime')) AS date,
     CAST(?2 AS INTEGER) AS n
@@ -140,6 +285,7 @@ pub fn range_decoder() -> decode.Decoder(Range) {
   use previous_date <- decode.field(5, decode.string)
   use next_date <- decode.field(6, decode.string)
   use today <- decode.field(7, decode.string)
+  use now_ms <- decode.field(8, decode.int)
   decode.success(Range(
     date:,
     first_date:,
@@ -149,6 +295,7 @@ pub fn range_decoder() -> decode.Decoder(Range) {
     previous_date:,
     next_date:,
     today:,
+    now_ms:,
   ))
 }
 
@@ -210,7 +357,8 @@ pub fn screen_time(
   start_ms,
   CAST(start_ms + duration_ms AS INTEGER) AS end_ms
 FROM events
-WHERE kind = 'window' AND start_ms >= ?1 AND start_ms < ?2
+WHERE kind = 'window' AND start_ms >= CAST(?1 AS INTEGER) - 86400000 AND start_ms < ?2
+  AND start_ms + duration_ms > CAST(?1 AS INTEGER)
   AND (CAST(?3 AS TEXT) = '' OR device = ?3)
 ORDER BY start_ms"
   #(
@@ -371,7 +519,7 @@ pub fn uncategorized_apps(since_ms since_ms: Int) {
   CAST(group_concat(DISTINCT device) AS TEXT) AS detail,
   CAST(sum(duration_ms) AS INTEGER) AS ms
 FROM events
-WHERE category = 'Uncategorized' AND start_ms >= ?1
+WHERE category = 'Uncategorized' AND kind IN ('window', 'web') AND start_ms >= ?1
 GROUP BY app ORDER BY ms DESC LIMIT 15"
   #(sql, [dev.ParamInt(since_ms)], uncategorized_apps_decoder())
 }
@@ -517,10 +665,12 @@ pub fn insert_event(
   app app: String,
   title title: String,
   category category: String,
+  tz_offset_min tz_offset_min: Option(Int),
+  site site: String,
 ) {
   let sql =
-    "INSERT OR REPLACE INTO events (device, kind, start_ms, duration_ms, app, title, category)
-VALUES (?, ?, ?, ?, ?, ?, ?)"
+    "INSERT OR REPLACE INTO events (device, kind, start_ms, duration_ms, app, title, category, tz_offset_min, site)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?8, ?9)"
   #(sql, [
     dev.ParamString(device),
     dev.ParamString(kind),
@@ -529,16 +679,24 @@ VALUES (?, ?, ?, ?, ?, ?, ?)"
     dev.ParamString(app),
     dev.ParamString(title),
     dev.ParamString(category),
+    dev.ParamNullable(option.map(tz_offset_min, fn(v) { dev.ParamInt(v) })),
+    dev.ParamString(site),
   ])
 }
 
 pub type EventCategories {
-  EventCategories(device: String, app: String, title: String, category: String)
+  EventCategories(
+    device: String,
+    app: String,
+    title: String,
+    site: String,
+    category: String,
+  )
 }
 
 pub fn event_categories() {
   let sql =
-    "SELECT DISTINCT device, app, title, category
+    "SELECT DISTINCT device, app, title, site, category
 FROM events"
   #(sql, [], event_categories_decoder())
 }
@@ -547,8 +705,9 @@ pub fn event_categories_decoder() -> decode.Decoder(EventCategories) {
   use device <- decode.field(0, decode.string)
   use app <- decode.field(1, decode.string)
   use title <- decode.field(2, decode.string)
-  use category <- decode.field(3, decode.string)
-  decode.success(EventCategories(device:, app:, title:, category:))
+  use site <- decode.field(3, decode.string)
+  use category <- decode.field(4, decode.string)
+  decode.success(EventCategories(device:, app:, title:, site:, category:))
 }
 
 pub fn set_category(
@@ -556,16 +715,74 @@ pub fn set_category(
   device device: String,
   app app: String,
   title title: String,
+  site site: String,
 ) {
   let sql =
     "UPDATE events SET category = ?1
-WHERE device = ?2 AND app = ?3 AND title = ?4"
+WHERE device = ?2 AND app = ?3 AND title = ?4
+  AND site = ?5"
   #(sql, [
     dev.ParamString(category),
     dev.ParamString(device),
     dev.ParamString(app),
     dev.ParamString(title),
+    dev.ParamString(site),
   ])
+}
+
+pub type DeviceEvents {
+  DeviceEvents(
+    kind: String,
+    start_ms: Int,
+    duration_ms: Int,
+    app: String,
+    title: String,
+    tz_offset_min: Option(Int),
+  )
+}
+
+pub fn device_events(
+  device device: String,
+  kind kind: String,
+  since_ms since_ms: Int,
+) {
+  let sql =
+    "SELECT kind, start_ms, duration_ms, app, title, tz_offset_min
+FROM events
+WHERE device = ?1 AND kind = ?2 AND start_ms >= ?3
+ORDER BY start_ms"
+  #(
+    sql,
+    [dev.ParamString(device), dev.ParamString(kind), dev.ParamInt(since_ms)],
+    device_events_decoder(),
+  )
+}
+
+pub fn device_events_decoder() -> decode.Decoder(DeviceEvents) {
+  use kind <- decode.field(0, decode.string)
+  use start_ms <- decode.field(1, decode.int)
+  use duration_ms <- decode.field(2, decode.int)
+  use app <- decode.field(3, decode.string)
+  use title <- decode.field(4, decode.string)
+  use tz_offset_min <- decode.field(5, decode.optional(decode.int))
+  decode.success(DeviceEvents(
+    kind:,
+    start_ms:,
+    duration_ms:,
+    app:,
+    title:,
+    tz_offset_min:,
+  ))
+}
+
+pub fn delete_device_windows_from(
+  device device: String,
+  since_ms since_ms: Int,
+) {
+  let sql =
+    "DELETE FROM events
+WHERE device = ?1 AND kind = 'window' AND start_ms >= ?2"
+  #(sql, [dev.ParamString(device), dev.ParamInt(since_ms)])
 }
 
 pub type DeviceNames {
@@ -599,21 +816,23 @@ WHERE name = ?1"
   #(sql, [dev.ParamString(device)])
 }
 
-pub fn set_device_os(device device: String, os os: String) {
+pub fn device_uploaded(device device: String, os os: String) {
   let sql =
-    "INSERT INTO devices (name, os)
-VALUES (?1, ?2)
-ON CONFLICT (name) DO UPDATE SET os = excluded.os"
+    "INSERT INTO devices (name, os, last_upload_ms)
+VALUES (?1, ?2, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+ON CONFLICT (name) DO UPDATE SET
+  os = CASE excluded.os WHEN '' THEN devices.os ELSE excluded.os END,
+  last_upload_ms = excluded.last_upload_ms"
   #(sql, [dev.ParamString(device), dev.ParamString(os)])
 }
 
 pub type DeviceSystems {
-  DeviceSystems(name: String, os: String)
+  DeviceSystems(name: String, os: String, last_upload_ms: Int)
 }
 
 pub fn device_systems() {
   let sql =
-    "SELECT name, os
+    "SELECT name, os, last_upload_ms
 FROM devices
 ORDER BY name"
   #(sql, [], device_systems_decoder())
@@ -622,5 +841,158 @@ ORDER BY name"
 pub fn device_systems_decoder() -> decode.Decoder(DeviceSystems) {
   use name <- decode.field(0, decode.string)
   use os <- decode.field(1, decode.string)
-  decode.success(DeviceSystems(name:, os:))
+  use last_upload_ms <- decode.field(2, decode.int)
+  decode.success(DeviceSystems(name:, os:, last_upload_ms:))
+}
+
+pub type Activity {
+  Activity(
+    device: String,
+    kind: String,
+    app: String,
+    category: String,
+    start_ms: Int,
+    end_ms: Int,
+    date: String,
+    hour: Int,
+    time: String,
+  )
+}
+
+pub fn activity(
+  since_ms since_ms: Int,
+  until_ms until_ms: Int,
+  device device: String,
+) {
+  let sql =
+    "
+SELECT device, kind, app, category, start_ms,
+  CAST(start_ms + duration_ms AS INTEGER) AS end_ms,
+  CAST(date(start_ms / 1000, 'unixepoch', 'localtime') AS TEXT) AS date,
+  CAST(strftime('%H', start_ms / 1000, 'unixepoch', 'localtime') AS INTEGER) AS hour,
+  CAST(strftime('%H:%M', start_ms / 1000, 'unixepoch', 'localtime') AS TEXT) AS time
+FROM events
+WHERE start_ms >= ?1 AND start_ms < ?2
+  AND (CAST(?3 AS TEXT) = '' OR device = ?3)
+ORDER BY start_ms"
+  #(
+    sql,
+    [dev.ParamInt(since_ms), dev.ParamInt(until_ms), dev.ParamString(device)],
+    activity_decoder(),
+  )
+}
+
+pub fn activity_decoder() -> decode.Decoder(Activity) {
+  use device <- decode.field(0, decode.string)
+  use kind <- decode.field(1, decode.string)
+  use app <- decode.field(2, decode.string)
+  use category <- decode.field(3, decode.string)
+  use start_ms <- decode.field(4, decode.int)
+  use end_ms <- decode.field(5, decode.int)
+  use date <- decode.field(6, decode.string)
+  use hour <- decode.field(7, decode.int)
+  use time <- decode.field(8, decode.string)
+  decode.success(Activity(
+    device:,
+    kind:,
+    app:,
+    category:,
+    start_ms:,
+    end_ms:,
+    date:,
+    hour:,
+    time:,
+  ))
+}
+
+pub type ScreenIntervals {
+  ScreenIntervals(start_ms: Int, end_ms: Int)
+}
+
+pub fn screen_intervals(
+  since_ms since_ms: Int,
+  until_ms until_ms: Int,
+  device device: String,
+) {
+  let sql =
+    "SELECT start_ms, CAST(start_ms + duration_ms AS INTEGER) AS end_ms
+FROM events
+WHERE kind = 'window' AND start_ms >= ?1 AND start_ms < ?2
+  AND (CAST(?3 AS TEXT) = '' OR device = ?3)
+ORDER BY start_ms"
+  #(
+    sql,
+    [dev.ParamInt(since_ms), dev.ParamInt(until_ms), dev.ParamString(device)],
+    screen_intervals_decoder(),
+  )
+}
+
+pub fn screen_intervals_decoder() -> decode.Decoder(ScreenIntervals) {
+  use start_ms <- decode.field(0, decode.int)
+  use end_ms <- decode.field(1, decode.int)
+  decode.success(ScreenIntervals(start_ms:, end_ms:))
+}
+
+pub type DailyCategories {
+  DailyCategories(date: String, hour: Int, category: String, ms: Int)
+}
+
+pub fn daily_categories(
+  since_ms since_ms: Int,
+  until_ms until_ms: Int,
+  device device: String,
+) {
+  let sql =
+    "SELECT CAST(date(start_ms / 1000, 'unixepoch', 'localtime') AS TEXT) AS date,
+  CAST(strftime('%H', start_ms / 1000, 'unixepoch', 'localtime') AS INTEGER) AS hour,
+  category, CAST(sum(duration_ms) AS INTEGER) AS ms
+FROM events
+WHERE kind = 'window' AND start_ms >= ?1 AND start_ms < ?2
+  AND (CAST(?3 AS TEXT) = '' OR device = ?3)
+GROUP BY 1, 2, 3"
+  #(
+    sql,
+    [dev.ParamInt(since_ms), dev.ParamInt(until_ms), dev.ParamString(device)],
+    daily_categories_decoder(),
+  )
+}
+
+pub fn daily_categories_decoder() -> decode.Decoder(DailyCategories) {
+  use date <- decode.field(0, decode.string)
+  use hour <- decode.field(1, decode.int)
+  use category <- decode.field(2, decode.string)
+  use ms <- decode.field(3, decode.int)
+  decode.success(DailyCategories(date:, hour:, category:, ms:))
+}
+
+pub type DailyApps {
+  DailyApps(date: String, hour: Int, app: String, ms: Int)
+}
+
+pub fn daily_apps(
+  since_ms since_ms: Int,
+  until_ms until_ms: Int,
+  device device: String,
+) {
+  let sql =
+    "SELECT CAST(date(start_ms / 1000, 'unixepoch', 'localtime') AS TEXT) AS date,
+  CAST(strftime('%H', start_ms / 1000, 'unixepoch', 'localtime') AS INTEGER) AS hour,
+  app, CAST(sum(duration_ms) AS INTEGER) AS ms
+FROM events
+WHERE kind = 'window' AND start_ms >= ?1 AND start_ms < ?2
+  AND (CAST(?3 AS TEXT) = '' OR device = ?3)
+GROUP BY 1, 2, 3"
+  #(
+    sql,
+    [dev.ParamInt(since_ms), dev.ParamInt(until_ms), dev.ParamString(device)],
+    daily_apps_decoder(),
+  )
+}
+
+pub fn daily_apps_decoder() -> decode.Decoder(DailyApps) {
+  use date <- decode.field(0, decode.string)
+  use hour <- decode.field(1, decode.int)
+  use app <- decode.field(2, decode.string)
+  use ms <- decode.field(3, decode.int)
+  decode.success(DailyApps(date:, hour:, app:, ms:))
 }

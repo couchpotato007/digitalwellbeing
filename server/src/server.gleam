@@ -1,4 +1,3 @@
-import categories
 import config
 import db
 import gleam/erlang/process
@@ -16,10 +15,8 @@ pub fn main() -> Nil {
   let assert Ok(conn) = sqlight.open("file:" <> cfg.config_dir <> "/db.sqlite3")
     as { "Cannot open the database, is " <> cfg.config_dir <> " writable?" }
   let assert Ok(Nil) = db.migrate(conn)
-  // events from before categories were set up on the server still have the
-  // ones agents sent along
-  let assert Ok(rules) = db.rules(conn)
-  let assert Ok(Nil) = db.recategorize(conn, categories.categorizer(rules))
+  // the catalog of known apps may have changed with an update
+  let assert Ok(Nil) = db.recategorize(conn)
 
   let ctx = web.Context(db: conn, token: cfg.admin_token)
   let assert Ok(_) =

@@ -61,10 +61,10 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
 /** The category colors of the web dashboard, in the order of [colorSlot]. */
-private val lightColors = listOf(
+val lightColors = listOf(
     0xFF2A78D6, 0xFFEB6834, 0xFF1BAF7A, 0xFFEDA100, 0xFFE87BA4, 0xFF008300, 0xFF6250D6, 0xFFE34948,
 ).map { Color(it) }
-private val darkColors = listOf(
+val darkColors = listOf(
     0xFF3987E5, 0xFFD95926, 0xFF199E70, 0xFFC98500, 0xFFD55181, 0xFF008300, 0xFF9085E9, 0xFFE66767,
 ).map { Color(it) }
 
@@ -90,6 +90,9 @@ class DashboardState(date: MutableState<String>, days: MutableState<Int>, device
     /** "" is all devices */
     var device by device
     var report by mutableStateOf<Report?>(null)
+    /** Null while loading, on errors and from servers without them. */
+    var insights by mutableStateOf<Insights?>(null)
+    var timeline by mutableStateOf<Timeline?>(null)
     var error by mutableStateOf<String?>(null)
     var loading by mutableStateOf(true)
     var retry by mutableIntStateOf(0)
@@ -109,9 +112,19 @@ fun rememberDashboard(server: Server, refresh: Int): DashboardState {
     val state = remember { DashboardState(date, days, device) }
     LaunchedEffect(server, state.date, state.days, state.device, refresh, state.retry) {
         state.loading = true
-        withContext(Dispatchers.IO) { runCatching { Stats.load(server, state.date, state.days, state.device) } }
-            .onSuccess {
-                state.report = it
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val report = Stats.load(server, state.date, state.days, state.device)
+                // the dashboard works without these
+                val insights = runCatching { Stats.insights(server, state.date, state.days, state.device) }.getOrNull()
+                val timeline = runCatching { Stats.timeline(server, state.date, state.days, state.device) }.getOrNull()
+                Triple(report, insights, timeline)
+            }
+        }
+            .onSuccess { (report, insights, timeline) ->
+                state.report = report
+                state.insights = insights
+                state.timeline = timeline
                 state.error = null
             }
             .onFailure { state.error = it.message ?: it.toString() }
@@ -120,9 +133,13 @@ fun rememberDashboard(server: Server, refresh: Int): DashboardState {
     return state
 }
 
-/** Screen time of all devices from the server. [onOpenTimeline] gets the row of the activity view tapped. */
+/**
+ * Screen time of all devices from the server: what happened first (totals,
+ * over time, habits), then the details. Categories come last, they are only
+ * as good as their rules.
+ */
 @Composable
-fun Dashboard(state: DashboardState, onOpenTimeline: (Int) -> Unit) {
+fun Dashboard(state: DashboardState, onOpenTimeline: () -> Unit) {
     val current = state.report
     Controls(state)
 
@@ -135,38 +152,36 @@ fun Dashboard(state: DashboardState, onOpenTimeline: (Int) -> Unit) {
         }
     }
     if (current == null) return
+    val insights = state.insights
+    val timeline = state.timeline
+    val appColors = timeline?.let { seriesColors(it.series) }.orEmpty()
 
-    SummaryCard(current)
-    ChartCard(
-        if (current.days == 1) "Per hour" else "Per day",
-        current.timeline,
-        current.today,
-        onOpenDay = state::openDay,
-    )
-    if (current.strips.isNotEmpty()) ActivityCard(current, onOpen = onOpenTimeline)
+    SummaryCard(current, insights)
+    if (timeline != null) TimelinePreviewCard(timeline, onOpenTimeline)
     if (current.days > 1) {
         ChartCard(
-            "By hour of day · average per day",
-            current.hours.map { it.copy(ms = it.ms / current.days) },
+            "Per day · line: 7-day average",
+            current.timeline,
             current.today,
-            onOpenDay = null,
+            onOpenDay = state::openDay,
+            marks = insights?.trend.orEmpty(),
         )
     }
+    UsageList("Apps", current.apps, color = { appColors[it.name] ?: MaterialTheme.colorScheme.primary })
+    if (insights != null) {
+        ComparisonCard(insights, appColors)
+        PhoneCard(current, insights)
+        FocusCard(current, insights)
+        WeekCard(insights.weekHours)
+    }
+    UsageList("Window titles", current.titles)
+    UsageList("Browser domains", current.domains)
+    if (current.device.isEmpty()) UsageList("Devices · last active", current.devices)
     val categoryTotal = current.categories.sumOf { it.ms }.coerceAtLeast(1)
     UsageList("Categories", current.categories, detail = { "${it.ms * 100 / categoryTotal}%" }) {
         categoryColor(current.categoryOrder, it.name)
     }
-    UsageList("Apps", current.apps)
-    UsageList("Window titles", current.titles)
-    UsageList("Browser domains", current.domains)
-    if (current.device.isEmpty()) UsageList("Devices · last active", current.devices)
 }
-
-/** The color of every category in the activity view, Canvas can't call composables. */
-@Composable
-fun categoryColors(report: Report): Map<String, Color> =
-    report.strips.flatMap { s -> s.segments.flatMap { listOf(topLevel(it.category), it.category) } }.distinct()
-        .associateWith { categoryColor(report.categoryOrder, it) }
 
 /** Day, week or 30 days, the date, and with [showDevices] the device. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -248,7 +263,7 @@ fun period(report: Report) =
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SummaryCard(report: Report) {
+private fun SummaryCard(report: Report, insights: Insights?) {
     val previous = when (report.days) {
         1 -> "the day before"
         7 -> "the week before"
@@ -293,21 +308,292 @@ private fun SummaryCard(report: Report) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            insights?.total?.takeIf { it.periods >= 3 }?.let { total ->
+                Text(
+                    "Usually ${formatDuration(total.usualMs)}" + (if (insights.untilNow) " by this time" else "") +
+                        " · " + verdict(total.score),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = verdictColor(total.score),
+                )
+            }
+            if (insights != null) RatingBar(insights)
             Spacer(Modifier.height(8.dp))
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                maxItemsInEachRow = 3,
-            ) {
-                tiles.forEach { (label, value, note) ->
-                    Column(Modifier.weight(1f).width(96.dp)) {
-                        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(value, style = MaterialTheme.typography.titleMedium)
-                        if (note.isNotEmpty()) {
-                            Text(note, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Tiles(tiles)
+        }
+    }
+}
+
+/** Productive, neutral and distracting time as one bar, by the ratings of their categories. */
+@Composable
+private fun RatingBar(insights: Insights) {
+    val parts = listOf(
+        Triple(Rating.Productive, insights.productiveMs, ratingColor(Rating.Productive)),
+        Triple(Rating.Neutral, insights.neutralMs, ratingColor(Rating.Neutral)),
+        Triple(Rating.Distracting, insights.distractingMs, ratingColor(Rating.Distracting)),
+    )
+    if (parts.sumOf { it.second } == 0L) return
+    Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.fillMaxWidth().height(10.dp).clip(RoundedCornerShape(5.dp))) {
+            parts.filter { it.second > 0 }.forEach { (_, ms, color) ->
+                Box(Modifier.weight(ms.toFloat()).height(10.dp).background(color))
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            parts.forEach { (rating, ms, color) ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(8.dp).clip(RoundedCornerShape(2.dp)).background(color))
+                    Text(
+                        " ${rating.label} ${formatDuration(ms)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Label, value and note in up to 3 columns. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun Tiles(tiles: List<Triple<String, String, String>>) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        maxItemsInEachRow = 3,
+    ) {
+        tiles.forEach { (label, value, note) ->
+            Column(Modifier.weight(1f).width(96.dp)) {
+                Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(value, style = MaterialTheme.typography.titleMedium)
+                if (note.isNotEmpty()) {
+                    Text(note, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+}
+
+/** A robust z-score in words, like the web dashboard. */
+private fun verdict(score: Double) = when {
+    score >= 3 -> "far more than usual"
+    score >= 2 -> "more than usual"
+    score <= -3 -> "far less than usual"
+    score <= -2 -> "less than usual"
+    else -> "within the usual range"
+}
+
+@Composable
+private fun verdictColor(score: Double) = when {
+    score >= 2 -> MaterialTheme.colorScheme.error
+    score <= -2 -> Color(0xFF1B9A6A)
+    else -> MaterialTheme.colorScheme.onSurfaceVariant
+}
+
+/** Apps against their usual time, the most unusual first. */
+@Composable
+private fun ComparisonCard(insights: Insights, appColors: Map<String, Color>) {
+    if (insights.total.periods < 3 || insights.apps.isEmpty()) return
+    val items = insights.apps.take(6)
+    val max = items.maxOf { maxOf(it.ms, it.usualMs) }.coerceAtLeast(1)
+    val track = MaterialTheme.colorScheme.surfaceVariant
+    val mark = MaterialTheme.colorScheme.onSurface
+    val primary = MaterialTheme.colorScheme.primary
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                "Apps against what is usual" + if (insights.untilNow) " by this time" else "",
+                style = MaterialTheme.typography.labelLarge,
+            )
+            items.forEach { c ->
+                val color = appColors[c.name] ?: primary
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Row(Modifier.fillMaxWidth()) {
+                        Text(c.name, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        Text(formatDuration(c.ms), modifier = Modifier.padding(start = 12.dp))
+                    }
+                    Text(
+                        "usually ${formatDuration(c.usualMs)} · ${verdict(c.score)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = verdictColor(c.score),
+                    )
+                    Canvas(Modifier.fillMaxWidth().height(8.dp)) {
+                        val y = size.height / 2
+                        val h = 6.dp.toPx()
+                        drawRoundRect(track, Offset(0f, y - h / 2), Size(size.width, h), CornerRadius(h / 2))
+                        drawRoundRect(color, Offset(0f, y - h / 2), Size(size.width * c.ms / max, h), CornerRadius(h / 2))
+                        val x = size.width * c.usualMs / max
+                        drawRect(mark, Offset(x - 1.dp.toPx(), 0f), Size(2.dp.toPx(), size.height))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun perDay(count: Int, days: Int) =
+    if (days == 1) count.toString() else "%.1f a day".format(count.toDouble() / days)
+
+private fun share(part: Int, whole: Int) = if (whole == 0) "–" else "${part * 100 / whole}%"
+
+/** Pickups, notifications and media, from phones. */
+@Composable
+private fun PhoneCard(report: Report, insights: Insights) {
+    if (insights.pickups + insights.notifications + insights.screenOns == 0) return
+    val days = report.days
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Phone habits", style = MaterialTheme.typography.labelLarge)
+            Tiles(
+                listOf(
+                    Triple("Pickups", perDay(insights.pickups, days), if (days > 1) "${insights.pickups} in total" else ""),
+                    Triple(if (days > 1) "First pickup, median" else "First pickup", insights.firstPickup.ifEmpty { "–" }, ""),
+                    Triple("Notifications", perDay(insights.notifications, days), ""),
+                    Triple("After a notification", share(insights.notificationPickups, insights.pickups), "of pickups, within a minute"),
+                    Triple(
+                        "Screen on < 1 min",
+                        share(insights.shortScreenOns, insights.screenOns),
+                        "median ${formatDuration(insights.medianScreenOnMs)}",
+                    ),
+                    Triple("Media playing", if (insights.audioMs == 0L) "–" else formatDuration(insights.audioMs), ""),
+                )
+            )
+            Text("Pickups by hour", style = MaterialTheme.typography.labelMedium)
+            CountBars(insights.pickupHours)
+            CountList("Opened first after unlocking", insights.pickupApps)
+            CountList("Notifications", insights.notificationApps)
+        }
+    }
+    UsageList("Media", insights.audioApps)
+}
+
+/** Long stretches in one category, switching, and the phone next to a computer. */
+@Composable
+private fun FocusCard(report: Report, insights: Insights) {
+    if (report.totalMs == 0L) return
+    val hours = (report.totalMs / 3_600_000).coerceAtLeast(1)
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Focus", style = MaterialTheme.typography.labelLarge)
+            Tiles(
+                buildList {
+                    add(
+                        Triple(
+                            "Productive stretches 25+ min",
+                            insights.longStretches.toString(),
+                            "${formatDuration(insights.longStretchMs)} · " +
+                                "${insights.longStretchMs * 100 / report.totalMs}%",
+                        )
+                    )
+                    val longest = insights.longestStretch
+                    add(
+                        Triple(
+                            "Longest stretch",
+                            if (longest.ms == 0L) "–" else formatDuration(longest.ms),
+                            "${longest.name} ${longest.detail}".trim(),
+                        )
+                    )
+                    add(Triple("App switches", "${insights.appSwitches / hours} an hour", "${insights.appSwitches} in total"))
+                    add(Triple("Typical session", formatDuration(insights.medianSessionMs), "median"))
+                    if (report.device.isEmpty() && insights.phoneDuringComputerMs > 0) {
+                        add(Triple("Phone at a computer", formatDuration(insights.phoneDuringComputerMs), ""))
+                        add(Triple("Pickups at a computer", insights.pickupsDuringComputer.toString(), ""))
+                    }
+                }
+            )
+        }
+    }
+    UsageList("Long stretches by category", insights.longStretchCategories, detail = { "" }) {
+        categoryColor(report.categoryOrder, it.name)
+    }
+}
+
+/** When screen time usually happens: weekdays by hours of the last 4 weeks. */
+@Composable
+private fun WeekCard(week: List<List<Long>>) {
+    val max = week.flatten().maxOrNull() ?: 0L
+    if (max == 0L || week.size != 7) return
+    val bar = MaterialTheme.colorScheme.primary
+    val empty = MaterialTheme.colorScheme.surfaceVariant
+    // Monday first
+    val rows = (week.drop(1) + week.take(1)).zip(listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text("Usual week · last 4 weeks", style = MaterialTheme.typography.labelLarge)
+            rows.forEach { (hours, day) ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(day, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(36.dp))
+                    Canvas(Modifier.weight(1f).height(12.dp)) {
+                        val cell = size.width / 24
+                        hours.forEachIndexed { h, ms ->
+                            val color = if (ms == 0L) empty else bar.copy(alpha = 0.12f + 0.88f * ms / max)
+                            drawRoundRect(
+                                color,
+                                Offset(h * cell + 1, 0f),
+                                Size(cell - 2, size.height),
+                                CornerRadius(2.dp.toPx()),
+                            )
                         }
                     }
                 }
+            }
+            Row {
+                Spacer(Modifier.width(36.dp))
+                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.SpaceBetween) {
+                    listOf("0", "6", "12", "18", "24").forEach {
+                        Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CountBars(values: List<Int>) {
+    val bar = MaterialTheme.colorScheme.primary
+    val max = (values.maxOrNull() ?: 0).coerceAtLeast(1)
+    Canvas(Modifier.fillMaxWidth().height(60.dp)) {
+        val slot = size.width / values.size
+        val width = (slot - 2.dp.toPx()).coerceAtLeast(1f)
+        values.forEachIndexed { i, n ->
+            val height = (size.height * n / max).coerceAtLeast(if (n > 0) 2.dp.toPx() else 0f)
+            drawRoundRect(
+                bar,
+                Offset(i * slot + (slot - width) / 2, size.height - height),
+                Size(width, height),
+                CornerRadius(minOf(3.dp.toPx(), width / 2)),
+            )
+        }
+    }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        listOf("0", "6", "12", "18", "24").forEach {
+            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun CountList(title: String, items: List<CountItem>) {
+    if (items.isEmpty()) return
+    val max = items.maxOf { it.count }.coerceAtLeast(1)
+    val track = MaterialTheme.colorScheme.surfaceVariant
+    val bar = MaterialTheme.colorScheme.primary
+    Text(title, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 4.dp))
+    items.forEach { item ->
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(Modifier.fillMaxWidth()) {
+                Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Text("${item.count}×", modifier = Modifier.padding(start = 12.dp))
+            }
+            Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(track)) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(item.count.toFloat() / max)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(bar)
+                )
             }
         }
     }
@@ -318,12 +604,21 @@ private fun SummaryCard(report: Report) {
  * a day then can be opened with [onOpenDay].
  */
 @Composable
-private fun ChartCard(title: String, buckets: List<UsageItem>, today: String, onOpenDay: ((String) -> Unit)?) {
+private fun ChartCard(
+    title: String,
+    buckets: List<UsageItem>,
+    today: String,
+    onOpenDay: ((String) -> Unit)?,
+    marks: List<Long> = emptyList(),
+) {
+    val markColor = MaterialTheme.colorScheme.onSurface
     val bar = MaterialTheme.colorScheme.primary
     val todayBar = MaterialTheme.colorScheme.tertiary
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     var selected by remember(buckets) { mutableStateOf<Int?>(null) }
-    val max = (buckets.maxOfOrNull { it.ms } ?: 0L).coerceAtLeast(1)
+    val max = maxOf(buckets.maxOfOrNull { it.ms } ?: 0L, marks.maxOrNull() ?: 0L).coerceAtLeast(1)
+    // a line per bucket, if there is one for each
+    val lines = marks.takeIf { it.size == buckets.size }
     val isDay = { item: UsageItem -> item.name.length == 10 }
     // at most about 8 labels
     val every = ((buckets.size + 7) / 8).coerceAtLeast(1)
@@ -336,7 +631,8 @@ private fun ChartCard(title: String, buckets: List<UsageItem>, today: String, on
                 Text(
                     when {
                         pick == null -> "max ${formatDuration(max)} · tap a bar"
-                        isDay(pick) -> "${pick.detail} ${formatDate(pick.name)}: ${formatDuration(pick.ms)}"
+                        isDay(pick) -> "${pick.detail} ${formatDate(pick.name)}: ${formatDuration(pick.ms)}" +
+                            (lines?.getOrNull(selected!!)?.let { ", 7-day average ${formatDuration(it)}" } ?: "")
                         else -> "${pick.name}:00–${pick.name}:59: ${formatDuration(pick.ms)}"
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -373,6 +669,10 @@ private fun ChartCard(title: String, buckets: List<UsageItem>, today: String, on
                         cornerRadius = CornerRadius(minOf(4.dp.toPx(), width / 2)),
                     )
                 }
+                lines?.let {
+                    val points = it.mapIndexed { i, ms -> Offset(i * slot + slot / 2, size.height * (1 - ms.toFloat() / max)) }
+                    points.zipWithNext { a, b -> drawLine(markColor.copy(alpha = 0.7f), a, b, 2.dp.toPx()) }
+                }
             }
             Row(Modifier.fillMaxWidth()) {
                 buckets.forEachIndexed { i, item ->
@@ -390,78 +690,6 @@ private fun ChartCard(title: String, buckets: List<UsageItem>, today: String, on
                         overflow = TextOverflow.Visible,
                         modifier = Modifier.weight(1f),
                     )
-                }
-            }
-        }
-    }
-}
-
-/** When which category was used, per device for a day or per day for longer. */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun ActivityCard(report: Report, onOpen: (Int) -> Unit) {
-    val order = report.categoryOrder
-    val shown = report.strips.flatMap { s -> s.segments.map { topLevel(it.category) } }.distinct()
-    val legend = order.filter { it in shown } + shown.filter { it !in order }
-    val track = MaterialTheme.colorScheme.surfaceVariant
-    val colors = categoryColors(report)
-
-    Card(onClick = { onOpen(0) }) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    if (report.days == 1) "Activity per device" else "Activity per day",
-                    style = MaterialTheme.typography.labelLarge,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    "Open timeline ›",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                legend.forEach { name ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(10.dp).clip(RoundedCornerShape(3.dp)).background(colors.getValue(name)))
-                        Text(" $name", style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-            }
-            report.strips.forEachIndexed { i, strip ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.clickable { onOpen(i) }.padding(vertical = 2.dp),
-                ) {
-                    Text(
-                        strip.label,
-                        style = MaterialTheme.typography.labelMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.width(72.dp),
-                    )
-                    Canvas(
-                        Modifier
-                            .weight(1f)
-                            .height(16.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(track)
-                    ) {
-                        val length = (strip.endMs - strip.startMs).coerceAtLeast(1).toFloat()
-                        strip.segments.forEach { s ->
-                            val x = size.width * (s.startMs - strip.startMs) / length
-                            val w = (size.width * (s.endMs - s.startMs) / length).coerceAtLeast(1.dp.toPx())
-                            drawRect(colors.getValue(s.category), Offset(x, 0f), Size(w, size.height))
-                        }
-                    }
-                }
-            }
-            Row {
-                Spacer(Modifier.width(72.dp))
-                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.SpaceBetween) {
-                    listOf("0", "6", "12", "18", "24").forEach {
-                        Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
                 }
             }
         }
