@@ -5,7 +5,7 @@
 import envoy
 import gleam/dict
 import gleam/dynamic/decode
-import gleam/erlang/process
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/float
 import gleam/http
 import gleam/http/request
@@ -14,7 +14,10 @@ import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
+import gleam/otp/actor
+import gleam/otp/static_supervisor
+import gleam/otp/supervision
 import gleam/result
 import gleam/string
 import gleam/time/calendar
@@ -42,9 +45,33 @@ const resync_ms = 600_000
 
 pub fn main() -> Nil {
   case load_config() {
+    Ok(Config(interval_seconds: 0, ..) as cfg) -> {
+      // 0 syncs once, for running from cron or a systemd timer
+      case sync(cfg) {
+        Ok(count) ->
+          io.println("Uploaded " <> int.to_string(count) <> " events")
+        Error(err) -> {
+          io.println_error("Sync failed: " <> err)
+          halt(1)
+        }
+      }
+    }
     Ok(cfg) -> {
       io.println("Syncing " <> cfg.device <> " to " <> cfg.server)
-      loop(cfg)
+      // The supervisor restarts the syncer if it ever dies. If that keeps
+      // happening the supervisor gives up and takes this process with it, so
+      // the VM exits and systemd can restart it.
+      let started =
+        static_supervisor.new(static_supervisor.OneForOne)
+        |> static_supervisor.add(supervision.worker(fn() { start_syncer(cfg) }))
+        |> static_supervisor.start
+      case started {
+        Ok(_) -> process.sleep_forever()
+        Error(err) -> {
+          io.println_error("Could not start: " <> string.inspect(err))
+          halt(1)
+        }
+      }
     }
     Error(err) -> {
       io.println_error(err)
@@ -56,19 +83,115 @@ pub fn main() -> Nil {
 @external(erlang, "erlang", "halt")
 fn halt(status: Int) -> Nil
 
-fn loop(cfg: Config) -> Nil {
-  case sync(cfg) {
-    Ok(count) -> io.println("Uploaded " <> int.to_string(count) <> " events")
-    Error(err) -> io.println_error("Sync failed: " <> err)
+/// A sync that takes longer than this is hanging, e.g. on a connection that
+/// died while the PC was suspended, and is killed.
+const sync_timeout_ms = 300_000
+
+/// Wait before retrying a failed sync. Doubles with every failure in a row,
+/// up to the normal interval.
+const retry_ms = 15_000
+
+type Message {
+  Sync
+  Finished(Result(Int, String))
+  WorkerDown(process.Down)
+  TimedOut(Pid)
+}
+
+type Syncer {
+  Syncer(
+    cfg: Config,
+    self: Subject(Message),
+    worker: Option(Pid),
+    failures: Int,
+  )
+}
+
+/// Syncs every `interval_seconds`. Each sync runs in its own process, so when
+/// it crashes or hangs, for example because the network is still down after
+/// waking up from suspend, only that sync fails and is retried soon.
+fn start_syncer(cfg: Config) -> actor.StartResult(Subject(Message)) {
+  actor.new_with_initialiser(1000, fn(self) {
+    process.send(self, Sync)
+    let selector =
+      process.new_selector()
+      |> process.select(self)
+      |> process.select_monitors(WorkerDown)
+    Syncer(cfg:, self:, worker: None, failures: 0)
+    |> actor.initialised
+    |> actor.selecting(selector)
+    |> actor.returning(self)
+    |> Ok
+  })
+  |> actor.on_message(handle_message)
+  |> actor.start
+}
+
+fn handle_message(
+  state: Syncer,
+  message: Message,
+) -> actor.Next(Syncer, Message) {
+  case message, state.worker {
+    // A sync is already running
+    Sync, Some(_) -> actor.continue(state)
+    Sync, None -> {
+      let Syncer(cfg:, self:, ..) = state
+      let pid =
+        process.spawn_unlinked(fn() { process.send(self, Finished(sync(cfg))) })
+      process.monitor(pid)
+      process.send_after(self, sync_timeout_ms, TimedOut(pid))
+      actor.continue(Syncer(..state, worker: Some(pid)))
+    }
+    Finished(result), Some(_) -> finish(state, result)
+    WorkerDown(process.ProcessDown(pid:, reason:, ..)), Some(worker)
+      if pid == worker
+    ->
+      case reason {
+        // Finished already arrived, or is about to
+        process.Normal -> actor.continue(state)
+        process.Killed -> finish(state, Error("Timed out"))
+        // The crash report with the stacktrace is already logged
+        process.Abnormal(reason) -> {
+          let reason =
+            decode.run(reason, decode.at([0], decode.dynamic))
+            |> result.unwrap(reason)
+          finish(state, Error("Crashed: " <> string.inspect(reason)))
+        }
+      }
+    TimedOut(pid), Some(worker) if pid == worker -> {
+      process.kill(pid)
+      actor.continue(state)
+    }
+    // Messages about workers that are already done
+    _, _ -> actor.continue(state)
   }
-  // 0 syncs once, for running from cron or a systemd timer
-  case cfg.interval_seconds {
-    0 -> Nil
-    seconds -> {
-      process.sleep(seconds * 1000)
-      loop(cfg)
+}
+
+fn finish(
+  state: Syncer,
+  result: Result(Int, String),
+) -> actor.Next(Syncer, Message) {
+  let failures = case result {
+    Ok(count) -> {
+      io.println("Uploaded " <> int.to_string(count) <> " events")
+      0
+    }
+    Error(err) -> {
+      io.println_error("Sync failed: " <> err)
+      state.failures + 1
     }
   }
+  let interval_ms = state.cfg.interval_seconds * 1000
+  let delay = case failures {
+    0 -> interval_ms
+    n ->
+      int.min(
+        interval_ms,
+        retry_ms * int.bitwise_shift_left(1, int.min(n - 1, 10)),
+      )
+  }
+  process.send_after(state.self, delay, Sync)
+  actor.continue(Syncer(..state, worker: None, failures:))
 }
 
 fn load_config() -> Result(Config, String) {
@@ -116,7 +239,9 @@ fn sync(cfg: Config) -> Result(Int, String) {
     now,
   ))
   let body =
-    shared.upload_to_json(shared.Upload(from_ms:, os: cfg.os, events:, app_types: []))
+    shared.upload_to_json(
+      shared.Upload(from_ms:, os: cfg.os, events:, app_types: []),
+    )
     |> json.to_string
   use _ <- result.map(send(http.Post, device_url <> "/events", cfg.token, body))
   list.length(events)
